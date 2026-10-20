@@ -33,7 +33,7 @@ WORKDIR /app
 # Workspace manifests first so dependency compilation is cached. The workspace
 # also lists the desktop crate; a stub manifest keeps server-only images slim.
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src-tauri/src && printf '[package]\nname = "douyin-recorder"\nversion = "0.2.0"\nedition = "2021"\n' > src-tauri/Cargo.toml \
+RUN mkdir -p src-tauri/src && printf '[package]\nname = "douyin-recorder"\nversion = "0.2.1"\nedition = "2021"\n' > src-tauri/Cargo.toml \
     && printf 'fn main() {}\n' > src-tauri/src/main.rs
 COPY core/Cargo.toml core/build.rs ./core/
 COPY core/proto ./core/proto

@@ -30,6 +30,8 @@ where
     db.migrate_to(new_path, persist_path)
 }
 
+/// Persist settings. Autostart is a desktop concern and is synced by the
+/// desktop command wrapper, which calls this after applying the OS state.
 pub fn save_settings(
     state: &AppState,
     mut new_settings: AppSettings,

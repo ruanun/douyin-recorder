@@ -49,12 +49,22 @@ pub async fn save_settings(host: &Host, new_settings: AppSettings) -> Result<App
     let state = &host.state;
     let _operation = state.lifecycle.operation()?;
     let _start = state.start_lock.lock().await;
-    let saved =
-        crate::migration::save_settings(state, new_settings, &crate::settings::settings_path())?;
+    persist_settings(host, new_settings)
+}
+
+/// Persist and apply settings without the async save locks. The caller must
+/// hold `start_lock` and a lifecycle operation. The desktop command uses this
+/// so it can sync OS autostart atomically with the settings write.
+pub fn persist_settings(host: &Host, new_settings: AppSettings) -> Result<AppSettings, String> {
+    let saved = crate::migration::save_settings(
+        &host.state,
+        new_settings,
+        &crate::settings::settings_path(),
+    )?;
     if !saved.recording_recovery_enabled {
         recovery_runtime::cancel_all(host, recovery::CancelReason::Settings, true);
     }
-    state.lifecycle.close_to_tray.store(
+    host.state.lifecycle.close_to_tray.store(
         saved.close_behavior == crate::settings::CloseBehavior::Tray,
         std::sync::atomic::Ordering::Release,
     );

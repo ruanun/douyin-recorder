@@ -16,6 +16,8 @@ use douyin_recorder_core::recovery;
 use douyin_recorder_core::settings::AppSettings;
 use douyin_recorder_core::{recording_log, service, AppState};
 
+use crate::autostart;
+
 fn host(state: &State<'_, Arc<AppState>>) -> Host {
     Host::new(state.inner().clone())
 }
@@ -27,10 +29,28 @@ pub async fn get_settings_cmd(state: State<'_, Arc<AppState>>) -> Result<AppSett
 
 #[tauri::command]
 pub async fn save_settings_cmd(
+    app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
-    new_settings: AppSettings,
+    mut new_settings: AppSettings,
 ) -> Result<AppSettings, String> {
-    service::save_settings(&host(&state), new_settings).await
+    use tauri_plugin_autostart::ManagerExt;
+
+    let host = host(&state);
+    // Debug and release share the settings file: never let a debug build (which
+    // cannot manage login items) overwrite the persisted preference.
+    if !autostart::is_autostart_available() {
+        new_settings.launch_on_startup =
+            douyin_recorder_core::settings::load_settings().launch_on_startup;
+    }
+    douyin_recorder_core::settings::validate_settings(&new_settings)?;
+
+    let _operation = host.state.lifecycle.operation()?;
+    let _start = host.state.start_lock.lock().await;
+    // Apply the OS login item first and roll it back if persisting fails, so
+    // the stored preference and the actual autostart state cannot drift apart.
+    autostart::save_with_autostart(&*app.autolaunch(), new_settings.launch_on_startup, || {
+        service::persist_settings(&host, new_settings.clone())
+    })
 }
 
 #[tauri::command]

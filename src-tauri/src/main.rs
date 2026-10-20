@@ -1,6 +1,7 @@
 //! Desktop entry point: a thin Tauri shell around the shared core runtime.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod autostart;
 mod commands;
 mod desktop;
 
@@ -18,6 +19,11 @@ fn main() {
             desktop::request_restore(app)
         }))
         .plugin(tauri_plugin_opener::init())
+        // Autostart starts the app with --hidden so it lives in the tray.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--hidden"]),
+        ))
         .setup(|app| {
             let mut runtime = Runtime::new().map_err(std::io::Error::other)?;
             let host: Host = runtime.host.clone();
@@ -33,6 +39,27 @@ fn main() {
                         let _ = app_handle.emit(&event, payload);
                     }
                 });
+            }
+            // Keep the system login item in sync with the saved preference.
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                let app_settings = douyin_recorder_core::settings::load_settings();
+                if let Err(error) =
+                    autostart::sync_on_startup(&*app.autolaunch(), app_settings.launch_on_startup)
+                {
+                    desktop::report_error(app.handle(), format!("同步系统自启动设置失败: {error}"));
+                }
+            }
+            // A hidden launch (autostart) goes straight to the tray; otherwise
+            // show the window (it starts hidden so the first frame is not blank).
+            let launched_hidden = std::env::args().any(|argument| argument == "--hidden");
+            let presentation = if launched_hidden {
+                desktop::enter_tray_at_startup(app.handle())
+            } else {
+                desktop::restore_window(app.handle())
+            };
+            if let Err(error) = presentation {
+                desktop::report_error(app.handle(), format!("初始化窗口或托盘失败: {error}"));
             }
             // Monitoring loop + danmaku status forwarding run on Tauri's
             // async runtime (the setup hook has no ambient tokio runtime).
@@ -73,6 +100,7 @@ fn main() {
             commands::check_for_update,
             commands::get_lifecycle_status,
             commands::get_recording_log_info,
+            autostart::is_autostart_available,
             commands::convert_danmaku_xml,
             commands::save_danmaku_ass,
             commands::export_danmaku_ass,

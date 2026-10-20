@@ -54,7 +54,28 @@ git push origin main --tags
 - 服务端：`douyin-recorder-server-<version>-linux-x86_64.tar.gz` + sha256
 - 容器镜像：`ghcr.io/<owner>/<repo>:latest` 与 `:<version>`
 
-## 4. 徽章（可选）
+## 4. 同步上游更新
+
+```bash
+git fetch upstream
+git merge upstream/main
+```
+
+本项目把业务代码拆到了 `core/`，上游仍集中在 `src-tauri/`。合并时 git 通常能识别重命名，
+但仍需人工处理以下几类冲突：
+
+1. `core/src/lib.rs`（上游是 `src-tauri/src/lib.rs`）：上游新增的 `mod`、
+   `#[tauri::command]`、插件初始化与启动流程属于**桌面层**，应迁移到 `src-tauri/src/main.rs`
+   或 `src-tauri/src/commands.rs`，不要把 Tauri 代码留在 `core`。
+2. `core/src/migration.rs` / `core/src/settings.rs`：业务逻辑保留在 core；
+   任何依赖 Tauri 插件的动作（如系统自启动）改为在桌面命令中通过 `service::persist_settings` 包装。
+3. 版本号保持本 fork 的版本（`Cargo.toml` workspace、`package.json`、`tauri.conf.json`）。
+4. Tauri 依赖版本需与 `@tauri-apps/api` / `@tauri-apps/cli` 的 minor 版本一致，
+   否则 CLI 会拒绝构建；如遇 `tauri-runtime` 内部 API 不兼容，整体升级 Tauri 而不是单独固定子 crate。
+5. 合并后必须跑：`cargo fmt --check`、`cargo clippy -D warnings`、`cargo test --workspace`、
+   `pnpm build && pnpm test`、`scripts/scan-secrets.sh`，并重新构建桌面安装包与 Docker 镜像。
+
+## 5. 徽章（可选）
 
 把下面的 `<owner>/<repo>` 换成分发仓库后放进 README：
 

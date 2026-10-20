@@ -7,7 +7,7 @@ description = "Douyin live stream & danmaku recorder (desktop, Tauri)"
 authors = ["you"]
 
 [build-dependencies]
-tauri-build = { version = "=2.6.1", features = [] }
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
 douyin-recorder-core = { path = "../core" }
@@ -16,9 +16,11 @@ serde_json.workspace = true
 tokio.workspace = true
 chrono.workspace = true
 
-tauri = { version = "=2.11.1", features = ["tray-icon"] }
-tauri-plugin-opener = "=2.5.4"
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
 
 [dev-dependencies]
-tauri = { version = "=2.11.1", features = ["test"] }
+tauri = { version = "2", features = ["test"] }
+tempfile.workspace = true
