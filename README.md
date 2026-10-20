@@ -1,368 +1,307 @@
 <div align="center">
 
-# 抖音直播录制工具
+# 抖音直播录制工具 · 弹幕版
 
-**一款简洁优雅的抖音直播录制桌面工具**
+**桌面与无头 Web 双形态的抖音直播录制工具**
 
-监控直播间 | 自动与定时录制 | FLV 转 MP4 | 多画质选择
+监控直播间 | 自动/定时录制 | 弹幕录制（分段对齐） | ASS 字幕导出与烧录
 
 ![Tauri 2](https://img.shields.io/badge/Tauri-2.x-blue?logo=tauri)
 ![Vue 3](https://img.shields.io/badge/Vue-3.x-brightgreen?logo=vuedotjs)
 ![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)
+![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 </div>
 
 ---
 
+## 简介
+
+本项目基于 [SplashedWhite/douyin-recorder](https://github.com/SplashedWhite/douyin-recorder)（MIT），
+在保留原有桌面体验的基础上，补齐了**弹幕**相关的完整链路，并增加了一个**无图形界面的 Web 服务端**：
+
+| 能力 | 上游 | 本项目（fork） |
+|------|------|----------------|
+| 直播监控 / 自动录制 / 分段 / 断流恢复 | ✅ | ✅（保持兼容） |
+| **弹幕录制**（WebSocket + protobuf） | ❌ | ✅ XML，B 站兼容格式 |
+| **弹幕与视频分段一一对齐** | ❌ | ✅ `part001.flv` ↔ `part001.xml` |
+| **ASS 字幕**（自动导出 / 手动上传转换 / 烧录进视频） | ❌ | ✅ |
+| **无头 Web 服务端**（浏览器操作，零 GTK/WebKit 依赖） | ❌ | ✅ 单二进制 / Docker |
+| 桌面端 | ✅ | ✅ 打包 deb/rpm/AppImage/NSIS/MSI |
+
+> 技术架构：`core`（业务核心，无 UI 依赖）+ `src-tauri`（桌面壳）+ `server`（Web 服务）。
+> 两种形态共享同一套业务逻辑与同一份前端页面。
+
+---
+
 ## ✨ 功能特性
 
-- **直播间监控** - 添加抖音直播间链接，实时查看主播开播状态
-- **一键录制** - 开播后点击录制，自动下载直播流
-- **逐房间自动录制** - 为指定房间开启开播检测，检测到直播后自动开始录制
-- **每日定时开启** - 限时监控下，可为每个房间设置每天固定时间开启一个自动监控窗口
-- **持续监控** - 为不定时开播的房间持续等待，自动录制每一场；正常下播后继续等待，直到手动关闭
-- **多画质支持** - 原画 / 蓝光 / 超清 / 高清 / 标清，按清晰度从高到低选择，新安装默认原画
-- **FLV 转 MP4** - 录制完成后一键转换，支持自动转换
-- **按主播分文件夹** - 可选将录制存入主播的固定文件夹，昵称变化后继续使用原文件夹
-- **代理支持** - 可配置 HTTP 代理，适应不同网络环境
-- **本地存储** - 数据保存在本地 SQLite 数据库，隐私安全
-- **轻量桌面应用** - 基于 Tauri，体积小、启动快、资源占用低
+### 录制
 
-## 群聊
-QQ群：1126726612
-问题答案是：douyinrecorder
+- **直播间监控** —— 添加 `live.douyin.com` 直播间链接，实时查看开播状态
+- **手动 / 自动 / 定时录制** —— 逐房间开启开播检测，支持每日定时开启监控窗口与持续监控
+- **多画质** —— 原画 / 蓝光 / 超清 / 高清 / 标清（新安装默认原画）
+- **分段录制** —— 按分钟切分，每段独立成文件与记录
+- **断流恢复** —— 推流中断后在限定时间内自动重连续录，生成接续任务
+- **FLV → MP4** —— 录制完成可自动或手动无损转封装
+- **按主播分文件夹** —— 昵称变化后继续使用原文件夹
+- **代理 / Cookie** —— 适配不同网络与登录态
 
-## 📋截图
+### 弹幕
+
+- **实时录制** —— 通过抖音 Webcast WebSocket 协议记录弹幕（含昵称、颜色、表情文本）
+- **B 站兼容 XML** —— 时间轴与录制起点对齐，可直接被弹弹play 等播放器加载
+- **分段对齐** —— 每段视频对应同名 XML，切换分段时弹幕文件同步轮换且连接不断开
+- **自动 ASS 字幕** —— 录制结束自动生成同名 `.ass`（可在设置中关闭）
+- **手动转换工具** —— 上传任意 XML 弹幕文件，一键转 ASS 并下载/保存
+- **烧录字幕** —— 用 FFmpeg + libass 生成带弹幕的 MP4
+
+### 部署
+
+- **桌面版** —— Tauri 2，轻量、托盘常驻、开机可用
+- **Web 服务端** —— 单个可执行文件内嵌前端，浏览器操作；`ldd` 不依赖 GTK/WebKit
+- **Docker** —— 多阶段构建，非 root 运行，`./data` 即全部数据
+
+---
+
+## 📋 截图
 
 <div align="center">
 
-> 主界面：直播间列表 + 录制任务管理
+> 主界面：直播间列表 + 录制任务（含弹幕徽标与字幕入口）
 >
-> ![screenshot1](assets/screenshot4.png)
+> ![screenshot](assets/screenshot4.png)
 >
-> ![screenshot1](assets/screenshot3.png)
->
-> 老版本：
->
-> ![screenshot1](assets/screenshot1.png)
->
-> ![screenshot2](assets/screenshot2.png)
+> ![screenshot](assets/screenshot3.png)
 
 </div>
 
 ---
 
-## 📥 下载安装（普通用户）
+## 📥 桌面版安装
 
-> 🚀快速开始
+1. 从 Releases 下载对应安装包：
+   - Linux：`.deb` / `.rpm` / `.AppImage`
+   - Windows：`.exe`（NSIS）/ `.msi`
+2. 安装后运行 `douyin-recorder`，粘贴直播间链接即可。
+3. 首次使用建议在「设置」里确认录制目录与是否开启「弹幕录制 / 自动生成 ASS 字幕」。
 
-### 第一步：下载
-
-前往 [Releases](https://github.com/SplashedWhite/douyin-recorder/releases) 页面，下载最新版本的安装包：
-
-| 系统 | 下载文件 |
-|------|---------|
-| **Windows** | `douyin-recorder_x.x.x_x64-setup.exe` |
-
-### 第二步：安装
-
-- **Windows**：双击 `.exe` 安装包，按提示完成安装
-
-### 第三步：使用
-
-1. 打开应用，在顶部输入框粘贴抖音直播间链接（格式：`https://live.douyin.com/房间号`）
-2. 点击"添加"按钮，房间会出现在监控列表中
-3. 等待主播开播（状态显示为绿色"直播中"），点击"录制"按钮
-4. 录制完成后，在任务列表点击"转换为 MP4"即可
-
-在全局设置的“录制保存目录”下可开启“按主播分文件夹”（默认关闭）。首次录制会创建“主播昵称_直播间编号”文件夹，之后主播改名仍保存到该文件夹。普通录制、分段录制和断线恢复均适用，转 MP4 后文件仍在原目录。关闭再开启会复用原来的文件夹名；更换保存目录后，会在新目录下使用同名子文件夹。已有文件保留原位置。删除直播间再添加会重新初始化文件夹绑定。
-
-也可以在房间卡片中打开“录制设置”，选择监控方式，再开启“自动录制”：
-
-- **限时监控（默认）**：在全局设置指定的窗口内等待开播；一直未开播则到期关闭。可以设置“每天 HH:mm”自动开启。“重新开始一个窗口”仅在正常录完一场后生效，不会在空等到期后自动续开。
-- **持续监控**：一直等待开播，正常录完后继续等待下一场，不受窗口时长和限时录后选项影响。已有每日定时会保留，但持续模式期间不触发；切回限时模式后恢复，若当天时间已过则从次日生效。
-
-保存录制设置不会开启或关闭自动录制。已开启时切换模式立即生效，切回限时模式从当前时间开始计算新窗口；正在录制的视频不会被打断。窗口时长、录完后的限时策略仍统一在右上角设置中调整。
-
-**停止操作**：关闭“自动录制”只停止监控，当前视频继续录制。持续模式下，点击视频的“停止”会同时关闭该房间的监控，防止刚停止又自动重录；再次开启后才恢复。
-
-持续模式遇到临时断流会保留已有文件，在等待后重新检测、获取新的直播地址并重试，异常文件仍标记为中断或失败。连续失败的等待时间逐渐增加，最长 15 分钟；平台限流等待 30 分钟。录制目录不可写或 FFmpeg 无法启动时会暂停监控，卡片显示原因，处理后需重新开启。切换模式不会取消已有的重试等待。
-
-程序重启后恢复持续监控之前的开关状态。自动检测要求程序运行、电脑保持唤醒；不会唤醒休眠的电脑。自动录制关闭时不在后台轮询该房间，录制期间也不轮询，关播由 FFmpeg 断流自动收尾。
-
-**关闭窗口与托盘**：在右上角设置中选择“点击关闭按钮时”的行为，保存后立即生效。
-
-- **直接退出程序（默认）**：停止正在进行的录制，等待文件收尾、转换和结果保存完成后退出，不再弹出确认框。退出时保留各房间的自动监控设置。
-- **关闭到系统托盘**：点击窗口的 × 后隐藏到托盘，不占用任务栏位置，录制、自动监控和定时任务继续运行。左键点击托盘图标或右键选择“显示主窗口”即可恢复；窗口恢复后托盘图标隐藏。右键“退出程序”会正常收尾后退出。
-
-窗口打开或普通最小化时不显示托盘图标。再次打开软件会恢复已有窗口，不会重复启动。退出等待超时或结果保存失败时会保留程序并提示原因，请检查任务状态后重试。
-
-录制文件默认保存在 `DouyinRecordings` 文件夹（可在设置中修改）。
-
-**录制网络与重连**：在设置中可随时调整并保存，重启后保留。每个录制进程使用启动时的配置，保存不会中断或修改正在运行的任务；新启动的手动、自动录制使用新值，无需开启“持续监控”。
-
-| 设置 | 默认值 | 可选范围 | FFmpeg 输入参数 |
-| --- | --- | --- | --- |
-| 网络读写超时 | 20 秒 | 1–3600 秒 | `-rw_timeout`（软件将秒换算成微秒，例如 15 秒为 `15000000`） |
-| 断线重连 | 关闭 | 开启 / 关闭 | 开启 `-reconnect`、`-reconnect_streamed`、`-reconnect_on_network_error` |
-| 重连次数限制 | 5 次 | 1–100 次 | `-reconnect_max_retries` |
-| 单次重连等待阈值 | 15 秒 | 1–3600 秒 | `-reconnect_delay_max` |
-| 累计重连等待阈值 | 30 秒 | 1–3600 秒 | `-reconnect_delay_total_max` |
-
-重连参数适用于 HTTP/HTTPS 直播流。重试间隔逐步增加，超过设置阈值时放弃；累计等待只计算重试间隔，不包含连接和读写耗时，也不是整个录制进程的总恢复时限。开启后同时重试 HTTP 500、502、503、504，尊重服务器的 `Retry-After`，不强制将正常 EOF 当作错误重连（`-reconnect_at_eof 0`）。关闭重连仍保留读写超时设置。
-
-此功能在 FFmpeg 进程内重新连接原直播地址，不能补回断流期间的内容。进程仍退出时，若已开启软件断流恢复，会重新获取直播地址。录制日志的 `recording_start_requested` 包含本次启动采用的超时和重连设置，可结合退出记录中的 FFmpeg 输出诊断。
-
-**软件断流恢复**：默认关闭，开启后适用于手动和自动开始的录制，无需开启持续监控。在设置中可调整“最长恢复时间”，默认为 **120 秒**，允许 **10–3600 秒的整数**。保存的时长用于下一轮恢复；保存关闭开关立即取消待恢复流程，已经开始的新录制继续运行。
-
-“断线重连”和“软件断流恢复”均需按需开启。网络或主播端经常断流、希望自动续录时，可在设置中分别开启并保存；开启重连后，下播时可能需要等待 FFmpeg 重试结束才显示录制完成。新安装及缺少这两个字段的旧配置使用关闭状态，已保存的开关状态会保留。以下为软件断流恢复开启后的行为：
-
-- FFmpeg 意外退出后，软件立即复核直播状态。确认仍在直播且有可用地址时，用新地址创建新文件、新记录，历史列表标注“断流恢复”，关联前一条任务，保留原文件。下播判断沿用现有接口解析，不进行下播二次确认。
-- 查询失败或直播地址为空时保持“正在恢复”，依次等待 3、5、10、20 秒，之后每次等待 20 秒。每次启动前重新查询，不使用旧地址盲目重试。鉴权刷新后仍失败、平台限流或本地文件／进程启动错误会结束快速恢复；限流仍执行原有监控冷却。
-- 恢复时限从本轮第一次进程退出起计算，包含查询与等待；到期不再查询或启动新进程，已启动的录制不会被这个时限停止。短时间反复“启动—退出”不会重置计时；只有进程运行满 60 秒且媒体时间至少前进 60 秒，下一次断流才会开启新恢复周期。首次收到有效媒体进度时会提示恢复成功。
-- 房间会显示“正在确认直播状态”“等待重试”“正在重新录制”。**“停止恢复”只取消本轮快速恢复，保留监控开关和每日定时，稍后可能再次自动录制。** 有新进程时显示普通“停止”，沿用原来的监控语义（持续监控会一并关闭）。关闭自动监控只取消自动来源的待恢复流程，手动来源恢复不受影响。
-- 恢复期间暂停该房间的普通自动检测，并暂缓限时窗口到期处理；其他房间正常检测。恢复结束后，持续监控回到原有退避，限时自动录制按原规则暂停，未开启监控的手动录制结束。
-- 旧分段转换不会阻塞续录，但删除记录、迁移数据库和退出程序仍需等待相应工作完成。关闭到托盘继续运行；退出会取消恢复并等待文件收尾。恢复倒计时不写入数据库，重启后不会继续旧恢复流程。
-
-软件恢复仅处理 FFmpeg 已退出的情况，不会主动重启仍运行但没有数据的进程。两层恢复都不能补回断流期间没有收到的媒体数据。
-
-若服务器在重连后返回全新的视频流，而非原数据的延续，直接复制录制可能出现坏帧、时间戳异常或无法恢复；HTTP 重连参数本身不能保证修复这种情况，必要时仍需停止后重新开始录制。
-
-**诊断日志**：软件默认将录制与自动监控日志保存在用户目录下的 `.douyin-recorder/logs`（Windows 为 `%USERPROFILE%\.douyin-recorder\logs`）。在“设置 → 诊断日志 → 打开日志文件夹”中查看，无需额外开启，也无需点击保存设置。日志位置不随录制目录或数据库迁移改变。
-
-遇到“录制中断”或“自动录制异常结束”时，请提供发生时间、对应直播间，以及日志文件夹中的 `recorder.log` 和 `recorder.数字.log` 历史文件（如有）。日志包含任务编号、录制进程退出码、最后 50 行 FFmpeg 输出、直播状态复核结果和监控暂停或重试原因。每行是带时区时间戳的 UTF-8 JSON 记录，可用文本编辑器打开。
-
-在“设置 → 诊断日志”中，可修改**单个日志大小（1–1024 MiB）**和**历史日志保留份数（1–100 份，不含当前文件）**，保存后立即按新配置写入和轮换，重启后仍有效。默认是每份 5 MiB、保留 4 份历史，总占用约 25 MiB；例如设为 50 MiB、10 份历史，总占用约 550 MiB。调小保留份数会清理更旧的历史文件；已有大文件不会截断，会随后续轮换逐步替换。单条特别长的记录完整写入时，文件可能略超过设置值。正常等待开播不会反复写入日志，实际可保留多久取决于房间数量及异常频率。
-
-录制日志会隐藏认证信息和直播链接中的凭证，不记录 Cookie 或完整接口响应。若日志保存失败，录制仍继续运行，设置中的诊断日志区域会分别显示录制日志和接口日志最近一次保存失败；此时部分记录可能缺失。日志功能只能记录启用该版本后的情况，不能恢复此前未保存的错误信息。
-
-**接口响应诊断（默认关闭）**：在“设置 → 诊断日志”中开启“记录接口响应”并保存，软件会将实际请求的成功和失败结果写入同一日志文件夹下的 `douyin-api.log`。记录功能本身不增加请求或后台轮询，覆盖添加房间、手动刷新、手动开始录制、自动检测、录制结束复核和断流恢复；鉴权失败后刷新会话的重试也会分别记录。取消恢复或到期打断的请求会注明“请求未完成”，并保留已取得的 HTTP 状态。开关和限额重启后仍有效，关闭后停止新增，已有文件保留。
-
-- 每行是一条 UTF-8 JSON，包含 `started_at` / `finished_at`（带时区的请求起止时间）、`platform_room_id`（抖音直播间编号）、`source`（请求来源）、`attempt`（本轮检查的尝试次数）、`http_status`、`result`、`conclusion` 以及 `response`。无法建立会话或没有收到响应时，保留错误信息及已知状态，`response` 为 `null`。
-- `conclusion` 会区分“房间状态显示直播中”“房间状态显示下播”“room has finished 明确下播”和“检测失败”。`response_format` 为 `json` 时，`response` 是完整的结构化诊断副本；非 JSON 响应保存为脱敏文本。凭证、直播链接和嵌套 JSON 字符串中的敏感信息会隐藏，因此副本不保证与原响应逐字节一致。不会使用普通日志的 100 字符预览或 16 KiB 文本截断规则；异常过深的嵌套内容会隐藏。
-- 开关下方可以独立设置接口日志大小（1–1024 MiB）和历史保留份数（1–100 份，不含当前文件），默认 5 MiB、4 份历史，预计约 25 MiB。历史文件为 `douyin-api.1.log` 等；与 `recorder.log` 分别轮换，互不清理。新限额在后续写入时执行，单条超过阈值的完整响应允许单独写入，后续记录再轮换，不截断 JSON。
-
-观察下播规律时，先开启接口记录，在直播中、刚下播和下播一段时间后分别点击房间的“刷新”；通过“打开日志文件夹”查看 `douyin-api.log` 及历史文件，按 `platform_room_id` 和时间比较 `conclusion`、`response.data`、`response.status_code` 等字段。观察结束后可关闭接口记录。
-
-排查断流恢复时，在 `recorder.log` 中搜索 `recovery_`：记录恢复开始、尝试、等待、启动新进程、收到媒体、稳定恢复、取消和结束原因，并包含恢复编号及前后任务编号。结合 `douyin-api.log` 的“录制结束复核”“断流恢复”来源、`recovery_id`、`task_id` 与时间，可以判断是查询失败、地址为空、启动失败还是恢复超时。日志采用一行一条 JSON 的格式，本次没有增加日志浏览页面。
-
-**分段录制**：在全局设置中开启“分段录制”，默认每段 60 分钟，也可以设置其他正整数分钟。默认关闭；开启后对所有新开始的手动、自动录制生效，修改设置不会改变正在录制的场次。
-
-- 文件名在原有“主播、房间号、开始时间、任务编号”后增加 `_part001`、`_part002` 等序号。切段时持续接收直播，每段边录边写入硬盘，不重新编码；按关键帧切换，实际时长可能略有偏差。停止时保留不足设定时长的最后一段。
-- 每段在列表中单独显示，已完成的各段可分别打开、定位文件夹或转 MP4。当前段的停止按钮会停止整场录制；删除记录仅隐藏该段记录，磁盘文件保留。
-- 同时开启“自动转 MP4”后，每段录完即进入转换队列，后续分段继续录制。全局同一时间只转换一个文件；成功后删除原 FLV，失败时保留 FLV 并显示原因，可手动重试。同名 MP4 已存在时不会覆盖，请先处理同名文件再重试。
-- 录制目录中的 `.recording-meta` 保存恢复用的分段清单，请在录制和收尾期间保留。异常重启会恢复已有分段，将未正常收尾的末段标记为中断，已完成分段仍然保留。
-
-> **提示**：如果网络正常访问抖音，无需额外配置代理。如果添加直播间失败，请确认使用的是完整的 `https://live.douyin.com/房间号` 格式链接。
+> **FFmpeg**：安装包已内置静态 FFmpeg（sidecar），无需另行安装。
 
 ---
 
-## 应用设置
+## 🐳 Web 服务端部署（推荐用于服务器/NAS）
 
-点击右上角齿轮图标打开设置面板：
+服务端没有图形界面，通过浏览器使用，功能与桌面版一致。
 
-| 设置项 | 说明 | 默认值 |
-|--------|------|--------|
-| **代理地址** | HTTP 代理 (如 `http://127.0.0.1:7890`) | 空 |
-| **Cookie** | 浏览器 Cookie，用于绕过反爬 | 空 |
-| **画质偏好** | 原画 / 蓝光 / 超清 / 高清 / 标清 | 原画（新安装） |
-| **录制目录** | 录制文件保存位置 | `~/DouyinRecordings` |
-| **数据库路径** | SQLite 数据库文件位置 | `~/.douyin-recorder/` |
-| **分段录制** | 全局按时长分段，修改后对新录制生效 | 关闭，开启后每段 60 分钟 |
-| **自动转 MP4** | 每段录完后转换；未分段时在整场结束后转换 | 关闭 |
-| **24 小时制** | 时间显示格式 | 开启 |
-| **开播检测间隔** | 自动录制开启时的状态检查间隔（10–3600 秒） | 60 秒 |
-| **单次监控窗口** | 仅限时监控：到期仍未开播时自动停止请求（1–24 小时） | 6 小时 |
-| **自动录完一场后** | 仅限时监控：关闭自动录制或重新开始一个窗口 | 关闭自动录制 |
-| **单个日志大小** | 每个诊断日志文件的轮换大小（1–1024 MiB） | 5 MiB |
-| **历史日志保留份数** | 不含当前文件，保存后生效（1–100 份） | 4 份 |
+### 方式一：Docker Compose（最简单）
 
-## 画质说明
+```bash
+git clone <本仓库>
+cd douyin-recorder
+cp .env.example .env          # 修改 DOUYIN_RECORDER_TOKEN
+docker compose up -d
+```
 
-软件画质与抖音的五档名称对应，按 **原画 → 蓝光 → 超清 → 高清 → 标清** 排列。实际分辨率、帧率和码率由直播间提供，档位名称不是固定规格。
+打开 `http://<主机>:8787/`，首次调用接口会提示输入令牌。
 
-下表来自 **2026-09-12** 对[直播间 622667288226发财巨魔](https://live.douyin.com/622667288226) 的接口读取及视频流实测，仅供参考，不代表所有直播间：
+```bash
+docker compose logs -f        # 查看日志
+docker compose down           # 停止（数据保留在 ./data）
+```
 
-| 画质 | 示例分辨率 | 示例帧率 | 说明 |
-|------|------------|----------|------|
-| **原画** | 1920 × 1080 | 60 fps | 优先获取接口的原画流，不代表无损或固定分辨率 |
-| **蓝光** | 1920 × 1080 | 60 fps | 本次与原画的分辨率、帧率相同，不能仅凭这两项认定画面质量完全相同 |
-| **超清** | 1280 × 720 | 60 fps | 本次与高清分辨率相同，但帧率更高 |
-| **高清** | 1280 × 720 | 30 fps | 本次是 720p、30 fps |
-| **标清** | 960 × 540 | 25 fps | 本次分辨率和帧率均低于其他四档 |
+### 方式二：直接运行 GHCR 镜像
 
-- 同样是 720p 或 1080p，仍可能有帧率、码率和压缩质量的差异；原画也不保证高于 1080p。
-- 横竖屏尺寸随主播推流变化，例如横屏可能是 1280 × 720，竖屏可能是 720 × 1280。软件直接保存直播流，不进行缩放或重新编码；转为 MP4 也只更换封装格式。
-- 本次五档均测得 **H.264 视频和 AAC 音频**。这只是该直播间当时返回的情况，没有办法据此认定为所有抖音直播间只提供这一种编码；但是本软件目前没有独立的编码格式选择，暂时是这一个，如果大家发现其他的编码格式了，还请提一下issue，会跟进的。
-- 选定档位缺失时，先逐级向下降级；如果没有可用低档，再从最近的高档向上查找。例如选择超清时，依次尝试超清、高清、标清、蓝光、原画。同一档优先使用 SDK 主路 FLV、SDK 主路 HLS、旧接口 FLV、旧接口 HLS，不会因为低档有 FLV 就跳过高档的 HLS。这里的回退针对接口中缺失或为空的地址，不表示播放地址连接失败后会自动尝试所有档位。
+```bash
+docker run -d --name douyin-recorder --restart unless-stopped \
+  -p 8787:8787 \
+  -e DOUYIN_RECORDER_TOKEN=$(openssl rand -hex 16) \
+  -e PUID=$(id -u) -e PGID=$(id -g) \
+  -v "$PWD/data:/data" \
+  ghcr.io/<owner>/<repo>:latest      # 发布工作流推送的镜像
+```
 
-### 旧版设置兼容
+也可以把它写进 `.env` 复用 compose：
 
-升级会保留已保存的档位，只修正显示名称；新安装、缺失或无效的画质设置默认使用原画。
+```bash
+echo 'DOUYIN_RECORDER_IMAGE=ghcr.io/<owner>/<repo>:latest' >> .env
+docker compose pull && docker compose up -d --no-build
+```
 
-| 当前名称 | 配置值 | 抖音 SDK 档位 | 旧版显示名称 |
-|----------|--------|---------------|--------------|
-| 原画 | `ORIGIN` | `origin` | 无（新增） |
-| 蓝光 | `FULL_HD1` | `uhd` | 蓝光 |
-| 超清 | `HD1` | `hd` | 高清 |
-| 高清 | `SD2` | `sd` | 流畅 |
-| 标清 | `SD1` | `ld` | 标清 |
+### 方式三：二进制 + systemd
 
-**如果此前使用默认的 `HD1`，升级后会显示“超清”，不会自动切换到原画。希望优先获取原画时，请在设置中手动选择“原画”并保存；新的选择用于之后开始的录制。**
+```bash
+# 从 Releases 下载 douyin-recorder-server-<version>-linux-x86_64.tar.gz
+sudo useradd -r -m -d /var/lib/douyin-recorder douyin-recorder
+sudo cp douyin-recorder-server /usr/local/bin/
+sudo cp douyin-recorder.service /etc/systemd/system/
+echo 'DOUYIN_RECORDER_TOKEN='$(openssl rand -hex 16) | sudo tee /etc/douyin-recorder.env
+sudo chmod 600 /etc/douyin-recorder.env
+sudo chown -R douyin-recorder: /var/lib/douyin-recorder
+sudo systemctl enable --now douyin-recorder
+```
 
-## 常见问题
+### 环境变量
 
-**Q: 为什么添加直播间失败？**
-A: 请确认使用的是 `https://live.douyin.com/房间号` 格式的完整链接，短链接暂不支持。
+| 变量 | 说明 | 默认 |
+|------|------|------|
+| `DOUYIN_RECORDER_HOME` | 配置、数据库、日志与默认录制目录 | `~/.douyin-recorder` |
+| `DOUYIN_RECORDER_BIND` | 监听地址 | `0.0.0.0:8787` |
+| `DOUYIN_RECORDER_TOKEN` | 访问令牌（`X-Auth-Token` 头或 `?token=`） | 不启用认证（会打印警告） |
+| `PUID` / `PGID` | 容器运行身份（与宿主机用户一致，文件属主才属于你） | `1000` |
+| `TZ` | 时区 | `Asia/Shanghai` |
 
-**Q: 录制的文件在哪里？**
-A: 默认保存在用户目录下的 `DouyinRecordings` 文件夹，可在设置中修改。
+### HTTP 接口
 
-**Q: 需要配置代理吗？**
-A: 如果你的网络环境可以正常访问抖音，则不需要配置代理。
+| 接口 | 说明 |
+|------|------|
+| `POST /api/invoke/{command}` | 与桌面版 `invoke` 同名同参（`get_rooms`、`start_record`、`save_settings_cmd` …） |
+| `GET /api/events` | Server-Sent Events，事件名与桌面版一致 |
+| `POST /api/invoke/convert_danmaku_xml` | 上传 XML 文本转 ASS：`{"content": "..."}` → `{ass, count}` |
+| `POST /api/invoke/export_danmaku_ass` | 为已有录制生成 ASS：`{"taskId"}` 或 `{"segmentId"}` |
+| `POST /api/invoke/burn_danmaku` | 烧录字幕并输出 `<原名>_danmaku.mp4` |
+| `GET /api/health` | 健康检查（无需认证） |
 
-**Q: 支持哪些画质？**
-A: 支持原画、蓝光、超清、高清、标清五档，新安装默认原画。具体参数由直播间提供，详见[画质说明](#画质说明)。
+> 安全建议见 [SECURITY.md](SECURITY.md)：请务必设置强令牌，并尽量置于内网或 HTTPS 反向代理之后。
+
+---
+
+## 弹幕与字幕说明
+
+录制完成后目录结构（分段示例）：
+
+```
+主播名_房间号_时间_任务号_part001.flv    # 视频
+主播名_房间号_时间_任务号_part001.xml    # 弹幕（B 站兼容）
+主播名_房间号_时间_任务号_part001.ass    # 字幕（自动生成）
+```
+
+- **自动生成**：设置 →「弹幕录制」→「自动生成 ASS 字幕」（默认开启）
+- **手动转换**：页面右上角上传图标，选择任意 XML 弹幕文件 → 转换为 ASS（保存到录制目录）
+- **烧录**：任务列表 → 弹幕字幕图标 → 烧录到视频（需 FFmpeg 带 libass；Docker 镜像已内置中文字体）
+- **文件获取**：Web 模式不提供浏览器下载，录像/弹幕/字幕直接保存在服务器的
+  `data/recordings`（宿主机的 `./data/recordings`）中，可通过文件共享、SFTP 或 `docker cp` 取用
+
+ASS 转换规则参考 [danmaku2ass](https://github.com/m13253/danmaku2ass) 与
+[danmu2ass](https://github.com/gwy15/danmu2ass)：滚动弹幕 `\move`、顶/底部 `\pos`、
+按长度分配轨道避免重叠、颜色按 ASS 的 `BBGGRR` 写入。
 
 ---
 
-## 📄 许可证
+## 发布产物
 
-[MIT](LICENSE)
+打 `v*` 标签后，`.github/workflows/release.yml` 会产出：
 
-本项目使用了 [FFmpeg](https://ffmpeg.org/) 作为录制引擎，详见 [第三方许可证声明](THIRD_PARTY_LICENSES.md)。
+| 产物 | 内容 |
+|------|------|
+| Linux 桌面 | `.deb` / `.rpm` / `.AppImage`（已内嵌 FFmpeg） |
+| Windows 桌面 | NSIS `.exe` / `.msi`（已内嵌 FFmpeg） |
+| 服务端 | `douyin-recorder-server-<version>-linux-x86_64.tar.gz`（**单二进制已内嵌 Web 前端**）+ systemd 单元 + `.env.example` + sha256 |
+| 校验和 | `SHA256SUMS.txt`（覆盖全部发布文件） |
+| 容器镜像 | `ghcr.io/<owner>/<repo>:latest` 与 `:<version>` |
 
----
-
-## 💬 反馈与贡献
-
-如果你在使用过程中遇到任何问题，或者有好的建议，欢迎：
-
-- 提交 [Issue](https://github.com/SplashedWhite/douyin-recorder/issues)
-- 提交 Pull Request 参与开发
-- 给项目点个 Star ⭐ 支持一下
-
----
+> 服务端无需另配前端文件：`server/build.rs` 会把 `dist/` 编译进二进制。macOS 桌面版请参考开发指南本地构建（未纳入自动发布）。
 
 ## 开发指南
 
-> 以下内容面向开发者，普通用户无需关注。
-
-### 技术栈
-
-| 层级 | 技术 |
-|------|------|
-| **前端** | Vue 3 + TypeScript + Element Plus + Pinia |
-| **后端** | Rust + Tauri 2 |
-| **数据库** | SQLite (rusqlite) |
-| **录制引擎** | FFmpeg (sidecar) |
-| **构建工具** | Vite 6 + pnpm |
-
 ### 环境要求
 
-- [Node.js](https://nodejs.org/) (>= 18)
-- [pnpm](https://pnpm.io/)
-- [Rust](https://www.rust-lang.org/tools/install) (rustup + cargo)
-- [Tauri CLI](https://tauri.app/) (开发依赖，会自动安装)
-- [FFmpeg](https://ffmpeg.org/) (录制引擎，需要单独下载)
+- Node.js ≥ 18、pnpm 10
+- Rust stable（rustup）
+- `protoc`（protobuf-compiler，用于生成弹幕协议代码）
+- Linux 桌面打包需要：`libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf`
+- FFmpeg：桌面打包需放入 sidecar（见下），服务端可使用系统 FFmpeg
 
-### FFmpeg 配置
-
-本项目使用 FFmpeg 作为录制引擎，以 sidecar 方式打包。由于 FFmpeg 二进制文件较大（约 200MB），不包含在 git 仓库中，需要手动下载并放置。
-
-**下载 FFmpeg：**
-
-1. 访问 FFmpeg 官方下载页面：https://ffmpeg.org/download.html
-2. 选择适合你操作系统的版本：
-   - **Windows**：下载 Windows 版本（推荐使用 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 的构建版本）
-   - **macOS**：使用 Homebrew 安装 (`brew install ffmpeg`) 或下载静态构建版本
-   - **Linux**：使用包管理器安装或下载静态构建版本
-
-**放置 FFmpeg：**
-
-将下载的 FFmpeg 可执行文件放置到以下目录：
-
-```
-src-tauri/binaries/
-```
-
-**文件命名规则：**
-
-FFmpeg 二进制文件需要按照 Tauri sidecar 的命名规则放置：
-
-| 操作系统 | 目标平台 | 文件名 |
-|---------|---------|--------|
-| Windows | x86_64 | `ffmpeg-x86_64-pc-windows-msvc.exe` |
-| Windows | x86 (32位) | `ffmpeg-i686-pc-windows-msvc.exe` |
-| macOS | Intel | `ffmpeg-x86_64-apple-darwin` |
-| macOS | Apple Silicon | `ffmpeg-aarch64-apple-darwin` |
-| Linux | x86_64 | `ffmpeg-x86_64-unknown-linux-gnu` |
-| Linux | ARM64 | `ffmpeg-aarch64-unknown-linux-gnu` |
-
-**示例（Windows）：**
-
-```bash
-# 创建 binaries 目录（如果不存在）
-mkdir -p src-tauri/binaries
-
-# 将下载的 ffmpeg.exe 重命名并移动到正确位置
-mv ffmpeg.exe src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
-```
-
-**验证配置：**
-
-```bash
-# 测试 FFmpeg 是否可用
-./src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe -version
-```
-
-> **注意**：如果你只需要在当前平台开发和构建，只需下载对应平台的 FFmpeg 版本即可。如果需要跨平台构建，需要下载所有目标平台的版本。
-
-### 安装与运行
-
-```bash
-# 1. 克隆项目
-git clone https://github.com/SplashedWhite/douyin-recorder.git
-cd douyin-recorder
-
-# 2. 安装依赖
-pnpm install
-
-# 3. 启动开发模式
-pnpm tauri dev
-```
-
-### 构建发布版本
-
-```bash
-pnpm tauri build
-```
-
-构建完成后，安装包将输出到 `src-tauri/target/release/bundle/` 目录。
-
-### 项目结构
+### 目录结构
 
 ```
 douyin-recorder/
-├── src/                        # 前端源码
-│   ├── components/             # Vue 组件
-│   │   ├── RoomList.vue        #   直播间列表
-│   │   ├── TaskList.vue        #   录制任务列表
-│   │   └── Settings.vue        #   设置面板
-│   ├── stores/                 # Pinia 状态管理
-│   └── types/                  # TypeScript 类型定义
-├── src-tauri/                  # 后端源码
-│   ├── src/
-│   │   ├── lib.rs              #   核心逻辑 & Tauri 命令
-│   │   ├── parser.rs           #   抖音 API 解析
-│   │   ├── recorder.rs         #   FFmpeg 录制管理
-│   │   ├── auto_policy.rs      #   监控模式、定时与录后策略
-│   │   ├── auto_recorder.rs    #   自动录制检查间隔与退避管理
-│   │   ├── database.rs         #   SQLite 数据库层
-│   │   └── settings.rs         #   配置管理
-│   ├── binaries/               # FFmpeg sidecar 二进制（需手动下载）
-│   └── tauri.conf.json         # Tauri 配置
-├── package.json
-└── vite.config.ts
+├── Cargo.toml               # workspace: core / src-tauri / server
+├── core/                    # 业务核心（无 Tauri/axum 依赖）
+│   ├── src/parser.rs        #   抖音直播间解析（enter API、画质选择）
+│   ├── src/recorder.rs      #   FFmpeg 进程管理、分段、能力探测
+│   ├── src/recovery*.rs     #   断流恢复状态机
+│   ├── src/danmaku/         #   弹幕 WS 协议、签名、XML 写入、ASS 转换
+│   ├── src/database.rs      #   SQLite 持久化与迁移
+│   ├── src/service.rs       #   业务操作层（桌面/HTTP 共用）
+│   ├── src/bus.rs           #   事件总线（桌面 IPC / 服务端 SSE）
+│   └── proto/               #   webcast protobuf 定义
+├── src-tauri/               # Tauri 桌面壳（窗口、托盘、命令）
+├── server/                  # 无头 Web 服务（axum + SSE + 内嵌前端）
+├── src/                     # Vue 3 前端
+├── deploy/                  # systemd unit
+├── docs/FORK.md             # 作为 fork 分发的清单
+└── .github/workflows/       # CI / Release / gitleaks
 ```
+
+### 常用命令
+
+```bash
+pnpm install
+pnpm dev                       # 前端调试
+pnpm build                     # 构建前端（被服务端内嵌）
+pnpm test                      # 前端测试
+pnpm tauri dev                 # 桌面开发
+npx tauri build                # 桌面打包（deb/rpm/AppImage 或 NSIS/MSI）
+
+cargo test --workspace         # 后端全部测试
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --release -p douyin-recorder-server   # 无头服务端
+scripts/scan-secrets.sh        # gitleaks 扫描（需本地安装）
+```
+
+### FFmpeg sidecar（仅桌面打包需要）
+
+打包时 Tauri 会查找按目标三元组命名的二进制：
+
+| 平台 | 文件名 |
+|------|--------|
+| Linux x86_64 | `src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu` |
+| Windows x86_64 | `src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe` |
+| macOS Intel | `src-tauri/binaries/ffmpeg-x86_64-apple-darwin` |
+| macOS Apple Silicon | `src-tauri/binaries/ffmpeg-aarch64-apple-darwin` |
+
+推荐使用 [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds/releases) 的静态构建。
+CI 的发布工作流会自动下载并放置。
+
+---
+
+## 更多功能细节
+
+监控模式（限时/持续）、停止语义、托盘行为、断流恢复全过程、诊断日志（含接口响应抓取）、
+分段录制细节、画质档位实测、旧版设置兼容等详细说明，见 [docs/USAGE.md](docs/USAGE.md)。
+
+## 常见问题
+
+**Q：弹幕文件为空 / 没有弹幕？**
+A：XML 在收到第一条弹幕时才创建；人气低的直播间可能整场只有几条。若长时间为 0，请查看日志中的
+`danmaku_start_failed` / `reconnecting`。
+
+**Q：烧录字幕报错 "No such filter: ass"？**
+A：当前 FFmpeg 未启用 libass。可先「导出 ASS」用播放器加载，或使用官方 Docker 镜像（已内置）。
+
+**Q：容器里的文件属主是 root？**
+A：请设置 `.env` 中的 `PUID`/`PGID` 与宿主机用户一致，并 `sudo chown -R $(id -u):$(id -g) data`。
+
+**Q：录制历史会无限增长吗？**
+A：历史记录本身没有上限，但列表按 **200 条/页** 加载，可点「加载更多历史」继续翻页，
+因此几千上万条记录也不会拖慢页面。清理旧记录请在任务列表手动删除（默认保留文件）。
+
+**Q：rpm 打包很慢？**
+A：正常现象。rpm 打包器在进程内用 gzip 压缩约 175 MB 的 FFmpeg，通常需要 7~8 分钟。
+
+---
+
+## 致谢与许可
+
+- 上游项目：[SplashedWhite/douyin-recorder](https://github.com/SplashedWhite/douyin-recorder)（MIT）
+- 弹幕协议与算法参考：
+  [rust-srec](https://github.com/hua0512/rust-srec)（Apache-2.0）、
+  [DouyinLiveWebFetcher](https://github.com/saermart/DouyinLiveWebFetcher)（MIT）、
+  [DouyinLiveRecorder](https://github.com/LyzenX/DouyinLiveRecorder)、
+  [danmaku2ass](https://github.com/m13253/danmaku2ass)、
+  [danmu2ass](https://github.com/gwy15/danmu2ass)
+- 录制引擎：[FFmpeg](https://ffmpeg.org/)（LGPL/GPL，作为独立进程调用）
+
+本项目采用 MIT 许可证，详见 [LICENSE](LICENSE)；第三方组件见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)。

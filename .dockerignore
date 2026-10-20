@@ -1,0 +1,19 @@
+# Keep the build context small and free of local runtime data/secrets.
+.git
+.github
+.env
+.env.*
+data/
+dist/
+node_modules/
+target/
+src-tauri/
+scripts/
+docs/
+assets/
+*.md
+*.log
+*.db
+*.flv
+*.mp4
+*.ass

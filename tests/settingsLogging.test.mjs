@@ -40,6 +40,16 @@ async function settingsFixture(overrides = {}, logOverrides = {}) {
     vue,
     '../stores/recorder': { useRecorderStore: () => store },
     '../constants/quality': { DEFAULT_QUALITY: 'ORIGIN', QUALITY_OPTIONS: [], normalizeQuality: value => value || 'ORIGIN' },
+    '../api/bridge': {
+      getAppVersion: async () => 'test',
+      isDesktop: () => true,
+      openDirectory: async path => opened.push(path),
+      invokeCommand: async command => {
+        commands.push(command)
+        assert.equal(command, 'get_recording_log_info')
+        return { directory: 'test-logs', last_error: null, api_last_error: null, ...logOverrides }
+      },
+    },
     '@tauri-apps/api/app': { getVersion: async () => 'test' },
     '@tauri-apps/api/core': { invoke: async command => {
       commands.push(command)

@@ -31,4 +31,38 @@ FFmpeg 的许可证取决于其编译配置：
 
 ---
 
+## 弹幕协议参考实现
+
+弹幕录制功能参考了以下开源项目的协议实现与数据格式：
+
+### rust-srec (hua0512/rust-srec)
+
+- **用途**：抖音弹幕 WebSocket 协议、X-Bogus 签名算法（`generate_xbogus`）与 XML 弹幕格式的 Rust 实现参考；本项目的 `src-tauri/src/danmaku/signature.rs` 移植自其 `signature.rs`
+- **许可证**：Apache-2.0
+- **仓库**：https://github.com/hua0512/rust-srec
+
+### DouyinLiveWebFetcher (saermart)
+
+- **用途**：抖音直播弹幕协议（`douyin.proto` 消息定义）的原始参考；本项目的 `src-tauri/proto/douyin_webcast.proto` 为其中的最小子集，字段编号与原定义严格一致
+- **许可证**：MIT
+- **仓库**：https://github.com/saermart/DouyinLiveWebFetcher
+
+### DouyinLiveRecorder (LyzenX)
+
+- **用途**：B 站兼容 XML 弹幕文件格式（`<d p="..." user="...">` 节点约定）的参考
+- **许可证**：GPL-3.0
+- **仓库**：https://github.com/LyzenX/DouyinLiveRecorder
+
+### danmaku2ass / danmu2ass
+
+- **用途**：ASS 字幕生成算法参考（滚动 `\move` 轨道分配、时间轴与转义规则）
+- **许可证**：MIT
+- **仓库**：https://github.com/m13253/danmaku2ass 、 https://github.com/gwy15/danmu2ass
+
+### X-Bogus 算法出处
+
+X-Bogus 签名算法源自抖音 Web 端 `webmssdk.js`（前端脚本），上述项目均基于同一公开算法。本项目为纯 Rust 独立实现。
+
+---
+
 本项目（douyin-recorder）本身采用 MIT 许可证，详见 [LICENSE](LICENSE) 文件。

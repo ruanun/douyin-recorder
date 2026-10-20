@@ -1,9 +1,11 @@
-use crate::{lifecycle::LifecycleStatus, recorder::STOP_WAIT_TIMEOUT, AppHandle, AppState};
+use douyin_recorder_core::recorder::STOP_WAIT_TIMEOUT;
+use douyin_recorder_core::AppState;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager,
+    AppHandle, Emitter, Manager,
 };
 
 const TRAY_ID: &str = "main-tray";
@@ -152,39 +154,13 @@ pub fn request_close(app: &AppHandle) {
 }
 
 pub(crate) async fn finish_pending_work(app: &AppHandle) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let completions = {
-        // Synchronize with a recording that was being registered when exit began.
-        let _start = state.start_lock.lock().await;
-        crate::recovery_runtime::cancel_all(app, crate::recovery::CancelReason::Shutdown, false);
-        state.recorder.request_stop_all_for_exit()?
-    };
-    let mut failure = None;
-    for completion in completions {
-        if let Err(error) = completion.wait().await {
-            failure = Some(error);
-        }
-    }
-    if let Err(error) = state.lifecycle.wait_for_operations().await {
-        failure = Some(error);
-    }
-    if let Some(error) = failure {
-        return Err(error);
-    }
-    if state
-        .db
-        .lock()
-        .map_err(|e| e.to_string())?
-        .has_running_tasks()
-        .map_err(|e| e.to_string())?
-    {
-        return Err("仍有录制结果未保存完成，请检查任务状态后重试".into());
-    }
-    Ok(())
+    let state = app.state::<Arc<AppState>>().inner().clone();
+    let host = douyin_recorder_core::bus::Host::new(state);
+    douyin_recorder_core::finish_pending_work(&host).await
 }
 
 pub fn request_exit(app: &AppHandle) {
-    let Some(state) = app.try_state::<AppState>() else {
+    let Some(state) = app.try_state::<Arc<AppState>>() else {
         return;
     };
     if !state.lifecycle.begin_exit() {
@@ -222,11 +198,6 @@ pub fn request_exit(app: &AppHandle) {
             }
         }
     });
-}
-
-#[tauri::command]
-pub fn get_lifecycle_status(state: tauri::State<AppState>) -> LifecycleStatus {
-    state.lifecycle.status()
 }
 
 #[cfg(test)]

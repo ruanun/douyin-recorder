@@ -1,14 +1,17 @@
 {
   "name": "douyin-recorder",
   "private": true,
-  "version": "0.1.14",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "test": "node --test tests/*.test.mjs",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "scan:secrets": "bash scripts/scan-secrets.sh",
+    "docker:build": "docker build -t douyin-recorder-server:local .",
+    "server": "cargo run -p douyin-recorder-server"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
@@ -16,15 +19,17 @@
     "@tauri-apps/plugin-opener": "^2.5.4",
     "element-plus": "^2.14.0",
     "pinia": "^3.0.4",
-    "pnpm": "^11.0.9",
     "vue": "^3.5.34"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.1",
     "@vitejs/plugin-vue": "^5.2.4",
     "@vue/tsconfig": "^0.9.1",
+    "puppeteer-core": "^25.14.0",
     "typescript": "^6.0.3",
     "vite": "^6.4.2",
     "vue-tsc": "^2.1.10"
-  }
+  },
+  "description": "抖音直播录制工具（弹幕版）：桌面 + 无头 Web 服务，支持弹幕录制与 ASS 字幕",
+  "license": "MIT"
 }

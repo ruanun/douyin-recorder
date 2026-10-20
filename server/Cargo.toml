@@ -1,0 +1,21 @@
+[package]
+name = "douyin-recorder-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless web server for Douyin live stream & danmaku recording"
+
+[[bin]]
+name = "douyin-recorder-server"
+path = "src/main.rs"
+
+[dependencies]
+douyin-recorder-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+futures-util = "0.3.34"
+
+axum = { version = "0.8.9", features = ["json"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+urlencoding = "2.1.3"

@@ -1,0 +1,118 @@
+// Minimal subset of the Douyin live webcast protocol (douyin.proto) used for
+// danmaku recording. Field numbers match the upstream definitions exactly:
+// https://github.com/saermart/DouyinLiveWebFetcher/blob/master/douyin.proto
+// Only the messages required for danmaku (WebcastChatMessage) and
+// stream-lifecycle detection (WebcastControlMessage) are included.
+
+syntax = "proto3";
+
+package douyin_webcast;
+
+// WebSocket frame wrapper.
+message PushFrame {
+  uint64 seq_id = 1;
+  uint64 log_id = 2;
+  int32 service = 3;
+  int32 method = 4;
+  repeated PushHeader headers = 5;
+  string payload_encoding = 6;
+  string payload_type = 7;
+  bytes payload = 8;
+  string lod_id_new = 9;
+}
+
+message PushHeader {
+  string key = 1;
+  string value = 2;
+}
+
+// Payload of PushFrame after decompression.
+message Response {
+  repeated Message messages = 1;
+  string cursor = 2;
+  uint64 fetch_interval = 3;
+  uint64 now = 4;
+  string internal_ext = 5;
+  int32 fetch_type = 6;
+  map<string, string> route_params = 7;
+  uint64 heartbeat_duration = 8;
+  bool need_ack = 9;
+  string push_server = 10;
+  string live_cursor = 11;
+  bool history_no_more = 12;
+}
+
+message Message {
+  string method = 1;
+  bytes payload = 2;
+  uint64 msg_id = 3;
+  int32 msg_type = 4;
+  uint64 offset = 5;
+  bool need_wrds_store = 6;
+  uint64 wrds_version = 7;
+  string wrds_sub_key = 8;
+}
+
+// WebcastChatMessage payload: a danmaku (bullet comment).
+message ChatMessage {
+  Common common = 1;
+  User user = 2;
+  string content = 3;
+  bool visible_to_sender = 4;
+  string full_screen_text_color = 6;
+  uint64 agree_msg_id = 11;
+  int32 priority_level = 12;
+  uint64 event_time = 15;
+  bool send_review = 16;
+  bool from_intercom = 17;
+  bool intercom_hide_user_card = 18;
+  repeated int32 chat_tags = 19;
+  uint64 chat_by = 20;
+  int32 individual_chat_priority = 21;
+  Text rtf_content = 40;
+  Text rtf_content_v2 = 41;
+}
+
+message Common {
+  string method = 1;
+  uint64 msg_id = 2;
+  uint64 room_id = 3;
+  uint64 create_time = 4;
+  int32 monitor = 5;
+  bool is_show_msg = 6;
+  string describe = 7;
+  Text display_text = 8;
+  uint64 fold_type = 9;
+  uint64 anchor_fold_type = 10;
+  uint64 priority_score = 11;
+  string log_id = 12;
+  User user = 15;
+}
+
+message User {
+  uint64 id = 1;
+  uint64 short_id = 2;
+  string nickname = 3;
+  int32 gender = 4;
+  string signature = 5;
+  int32 level = 6;
+}
+
+message Text {
+  string key = 1;
+  string default_pattern = 2;
+  TextFormat default_format = 3;
+}
+
+message TextFormat {
+  string color = 1;
+  bool bold = 2;
+  bool italic = 3;
+  int32 weight = 4;
+}
+
+// WebcastControlMessage payload: action == 3 signals the stream ended.
+message ControlMessage {
+  uint64 action = 2;
+  string tips = 3;
+}

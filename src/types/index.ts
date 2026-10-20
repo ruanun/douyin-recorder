@@ -31,6 +31,8 @@ export interface RecordTask {
   file_size: number | null
   trigger: 'manual' | 'auto'
   recovery_from_task_id: number | null
+  danmaku_path: string | null
+  danmaku_count: number | null
   segment_output: { file_prefix: string; output_pattern: string; manifest_path: string; duration_secs: number } | null
   segments: RecordSegment[]
 }
@@ -47,6 +49,8 @@ export interface RecordSegment {
   conversion_state: 'idle' | 'queued' | 'converting' | 'failed'
   conversion_error: string | null
   deleted: boolean
+  danmaku_path: string | null
+  danmaku_count: number | null
 }
 
 export interface AppSettings {
@@ -60,6 +64,8 @@ export interface AppSettings {
   auto_convert_mp4: boolean
   segment_recording_enabled: boolean
   segment_duration_minutes: number
+  danmaku_recording_enabled: boolean
+  auto_export_danmaku_ass: boolean
   ffmpeg_reconnect_enabled: boolean
   recording_recovery_enabled: boolean
   recording_recovery_timeout_secs: number
@@ -118,6 +124,15 @@ export interface RecordingStatusChanged {
   room: LiveRoom | null
   reason: 'finalizing' | 'manual_stop' | 'stream_ended' | 'interrupted' | 'failed' | 'auto_started' | 'conversion_started' | 'conversion_finished' | 'recovery_started'
   message: string | null
+}
+
+export interface DanmakuStatus {
+  task_id: number
+  count: number
+  total_count: number
+  segment_index: number | null
+  state: 'connected' | 'recording' | 'reconnecting' | 'stopped' | 'stream_closed' | 'ended' | 'rotated'
+  error: string | null
 }
 
 export interface RoomAutoRecordingChanged {

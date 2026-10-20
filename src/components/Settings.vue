@@ -1,7 +1,7 @@
 <template>
   <el-dialog v-model="visible" title="设置" width="460" :show-close="!migrating" :close-on-click-modal="!migrating" :close-on-press-escape="!migrating" @open="onOpen">
     <div class="settings-body">
-      <div class="settings-section">
+      <div v-if="isDesktop()" class="settings-section">
         <div class="section-header">
           <span class="section-label">点击关闭按钮时</span>
         </div>
@@ -238,6 +238,22 @@
 
       <div class="settings-section">
         <div class="section-header">
+          <span class="section-label">弹幕录制</span>
+          <span class="section-hint">录制直播时同步记录弹幕到 XML 文件（B站兼容格式，可用播放器叠加）</span>
+        </div>
+        <el-switch v-model="form.danmaku_recording_enabled" active-text="开启" inactive-text="关闭" />
+        <div class="quality-note">弹幕与视频保存在同一目录，文件名与视频一致、以 .xml 结尾；时间轴与录制开始时刻对齐。修改后对新开始的录制生效。</div>
+        <div v-if="form.danmaku_recording_enabled" class="auto-setting-row">
+          <div class="section-header" style="margin-bottom: 6px">
+            <span class="section-label">自动生成 ASS 字幕</span>
+            <span class="section-hint">录制结束后自动把弹幕转换为同名字幕文件</span>
+          </div>
+          <el-switch v-model="form.auto_export_danmaku_ass" active-text="开启" inactive-text="关闭" />
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="section-header">
           <span class="section-label">时间格式</span>
           <span class="section-hint">任务列表中的时间显示方式</span>
         </div>
@@ -324,7 +340,7 @@
         <div class="quality-note log-budget">接口响应保存至 douyin-api.log，成功和失败都会记录，凭证会隐藏。保存设置后生效，不增加请求；关闭后保留已有文件。</div>
         <div v-if="form.api_log_enabled" class="quality-note log-budget">接口日志预计占用约 {{ apiLogBudgetText }}，默认约 25 MiB。调小份数会在后续写入时清理旧文件；单条完整响应可能超过大小阈值。</div>
         <div v-if="logInfo" class="log-directory">{{ logInfo.directory }}</div>
-        <el-button @click="openLogFolder" :loading="openingLogs" :disabled="loadingLogs">打开日志文件夹</el-button>
+        <el-button v-if="isDesktop()" @click="openLogFolder" :loading="openingLogs" :disabled="loadingLogs">打开日志文件夹</el-button>
         <div class="quality-note">包含录制和自动监控记录。遇到问题时，可将文件夹中的日志文件提供给开发者。</div>
         <div v-if="logInfo?.last_error" class="log-error" role="alert">录制日志最近一次保存失败（部分记录可能缺失）：{{ logInfo.last_error }}</div>
         <div v-if="logInfo?.api_last_error" class="log-error" role="alert">接口日志最近一次保存失败（部分响应可能缺失）：{{ logInfo.api_last_error }}</div>
@@ -373,9 +389,7 @@
 import { computed, ref, reactive } from 'vue'
 import { useRecorderStore } from '../stores/recorder'
 import { DEFAULT_QUALITY, QUALITY_OPTIONS, normalizeQuality } from '../constants/quality'
-import { getVersion } from '@tauri-apps/api/app'
-import { invoke } from '@tauri-apps/api/core'
-import { openPath } from '@tauri-apps/plugin-opener'
+import { getAppVersion, invokeCommand as invoke, isDesktop, openDirectory } from '../api/bridge'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { AppSettings, RecordingLogInfo } from '../types'
 
@@ -413,7 +427,7 @@ async function openLogFolder() {
   openingLogs.value = true
   try {
     const info = await refreshLogInfo()
-    if (info) await openPath(info.directory)
+    if (info) await openDirectory(info.directory)
   } catch (error) {
     logInfoError.value = `无法打开日志文件夹：${error}`
   } finally {
@@ -421,7 +435,7 @@ async function openLogFolder() {
   }
 }
 
-getVersion().then(v => { version.value = v })
+getAppVersion().then(v => { version.value = v })
 
 const form = reactive({
   close_behavior: 'exit' as AppSettings['close_behavior'],
@@ -433,6 +447,8 @@ const form = reactive({
   auto_convert_mp4: false,
   segment_recording_enabled: false,
   segment_duration_minutes: 60,
+  danmaku_recording_enabled: true,
+  auto_export_danmaku_ass: true,
   ffmpeg_reconnect_enabled: false,
   recording_recovery_enabled: false,
   recording_recovery_timeout_secs: 120,
@@ -474,6 +490,8 @@ function onOpen() {
   form.auto_convert_mp4 = store.settings.auto_convert_mp4 ?? false
   form.segment_recording_enabled = store.settings.segment_recording_enabled ?? false
   form.segment_duration_minutes = store.settings.segment_duration_minutes ?? 60
+  form.danmaku_recording_enabled = store.settings.danmaku_recording_enabled ?? true
+  form.auto_export_danmaku_ass = store.settings.auto_export_danmaku_ass ?? true
   form.ffmpeg_reconnect_enabled = store.settings.ffmpeg_reconnect_enabled ?? false
   form.recording_recovery_enabled = store.settings.recording_recovery_enabled ?? false
   form.recording_recovery_timeout_secs = store.settings.recording_recovery_timeout_secs ?? 120

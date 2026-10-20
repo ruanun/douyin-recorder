@@ -63,7 +63,8 @@ pids/
 *.sqlite
 *.sqlite3
 
-# 录制的视频文件（用户数据，不应提交）
+# 录制的视频与字幕文件（用户数据，不应提交）
+*.ass
 *.mp4
 *.flv
 *.mkv
@@ -82,3 +83,4 @@ pids/
 # package-lock.json
 # yarn.lock
 # bun.lockb
+data/

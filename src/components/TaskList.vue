@@ -43,10 +43,19 @@
               <span v-if="task.trigger === 'auto'" class="task-trigger-badge">自动</span>
               <span v-if="task.recovery_from_task_id != null" class="task-trigger-badge" :title="`接续任务 ${task.recovery_from_task_id}`">断流恢复</span>
               <span v-if="task.segmentIndex" class="task-trigger-badge">第 {{ task.segmentIndex }} 段</span>
+              <span
+                v-if="danmakuCount(task.id) > 0"
+                class="task-trigger-badge danmaku-badge"
+                :title="`弹幕 ${danmakuCount(task.id)} 条`"
+              >弹幕 {{ danmakuCount(task.id) }}</span>
+              <span v-else-if="task.danmaku_count && task.danmaku_count > 0" class="task-trigger-badge danmaku-badge">{{ task.danmaku_count }} 弹幕</span>
               <span class="task-time">{{ formatTime(task.start_time) }}</span>
             </div>
             <div class="task-path" v-if="task.file_path">
               {{ task.file_path.split(/[/\\]/).pop() }}
+            </div>
+            <div class="task-path danmaku-path" v-if="task.danmaku_path">
+              弹幕：{{ task.danmaku_path.split(/[/\\]/).pop() }}
             </div>
             <div v-if="task.conversionError" class="segment-error">{{ task.conversionError }}</div>
           </div>
@@ -61,7 +70,7 @@
               <el-icon :size="15"><VideoPause /></el-icon>
             </button>
             <button
-              v-if="canAccessFile(task)"
+              v-if="canAccessFile(task) && isDesktop()"
               class="icon-btn primary"
               @click="openFile(task)"
               title="打开文件"
@@ -69,13 +78,28 @@
               <el-icon :size="15"><FolderOpened /></el-icon>
             </button>
             <button
-              v-if="canAccessFile(task)"
+              v-if="canAccessFile(task) && isDesktop()"
               class="icon-btn primary"
               @click="openFolder(task)"
               title="打开文件夹"
             >
               <el-icon :size="15"><Folder /></el-icon>
             </button>
+            <el-dropdown
+              v-if="task.danmaku_path && task.status !== 'recording'"
+              trigger="click"
+              @command="(command: string) => onDanmakuAction(task, command)"
+            >
+              <button class="icon-btn primary" title="弹幕字幕">
+                <el-icon :size="15"><ChatDotSquare /></el-icon>
+              </button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="ass">导出 ASS 字幕</el-dropdown-item>
+                  <el-dropdown-item command="burn">烧录到视频（较慢）</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
             <button
               v-if="canConvert(task)"
               class="icon-btn primary"
@@ -95,6 +119,12 @@
           </div>
         </div>
       </TransitionGroup>
+      <div v-if="hasMoreTasks" class="load-more">
+        <el-button :loading="loadingMoreTasks" @click="store.loadMoreTasks()">
+          加载更多历史
+        </el-button>
+        <span class="load-more-hint">已显示最近 {{ tasks.length }} 条</span>
+      </div>
     </div>
   </el-card>
 </template>
@@ -104,15 +134,19 @@ import { storeToRefs } from 'pinia'
 import { computed } from 'vue'
 import { useRecorderStore } from '../stores/recorder'
 import { ElMessage } from 'element-plus'
-import { Delete, VideoPause, FolderOpened, Folder, Switch } from '@element-plus/icons-vue'
-import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener'
+import { Delete, VideoPause, FolderOpened, Folder, Switch, ChatDotSquare } from '@element-plus/icons-vue'
+import { isDesktop, openRecordedFile, revealRecordedFile } from '../api/bridge'
 import type { RecordSegment } from '../types'
 import { recordingRows, type TaskRow } from '../utils/recordingRows'
 
 const store = useRecorderStore()
-const { tasks: sessions, settings } = storeToRefs(store)
+const { tasks: sessions, settings, danmakuCounts, hasMoreTasks, loadingMoreTasks } = storeToRefs(store)
 
 const tasks = computed(() => recordingRows(sessions.value))
+
+function danmakuCount(taskId: number) {
+  return danmakuCounts.value[taskId] ?? 0
+}
 
 function getStatusText(status: string, conversionState?: RecordSegment['conversion_state']) {
   if (conversionState === 'queued') return '等待转换'
@@ -215,13 +249,33 @@ async function stopRecord(task: TaskRow) {
   }
 }
 
+async function onDanmakuAction(task: TaskRow, action: string) {
+  const args = { taskId: task.id, segmentId: task.segmentId }
+  try {
+    if (action === 'ass') {
+      const path = await store.exportDanmakuAss(args)
+      ElMessage.success(`已生成字幕：${path.split(/[/\\]/).pop()}`)
+    } else {
+      const loading = ElMessage({ message: '正在烧录弹幕字幕，请稍候…', duration: 0 })
+      try {
+        const path = await store.burnDanmaku(args)
+        ElMessage.success(`烧录完成：${path.split(/[/\\]/).pop()}`)
+      } finally {
+        loading.close()
+      }
+    }
+  } catch (e) {
+    ElMessage.error(`弹幕字幕处理失败: ${e}`)
+  }
+}
+
 async function openFile(task: TaskRow) {
   if (!task.file_path) {
     ElMessage.warning('文件路径为空')
     return
   }
   try {
-    await openPath(task.file_path)
+    await openRecordedFile({ path: task.file_path })
   } catch (e) {
     ElMessage.error(`打开文件失败: ${e}`)
   }
@@ -233,9 +287,9 @@ async function openFolder(task: TaskRow) {
     return
   }
   try {
-    await revealItemInDir(task.file_path)
+    await revealRecordedFile({ path: task.file_path })
   } catch (e) {
-    ElMessage.error(`打开文件夹失败: ${e}`)
+    ElMessage.warning(String(e))
   }
 }
 
@@ -485,6 +539,11 @@ async function deleteTask(task: TaskRow) {
   background: var(--color-primary-light);
 }
 
+.danmaku-badge {
+  color: #e6a23c;
+  background: rgba(230, 162, 60, 0.12);
+}
+
 .task-path {
   font-size: 12px;
   color: var(--color-text-secondary);
@@ -493,6 +552,23 @@ async function deleteTask(task: TaskRow) {
   text-overflow: ellipsis;
   font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
   font-size: 11px;
+}
+
+.danmaku-path {
+  color: #b88230;
+}
+
+.load-more {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 0 4px;
+}
+
+.load-more-hint {
+  font-size: 11px;
+  color: var(--color-text-secondary);
 }
 
 /* ── Actions ── */

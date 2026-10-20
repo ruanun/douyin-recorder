@@ -1,0 +1,12 @@
+# gitleaks configuration
+#
+# The default rule set is used, plus a narrow allowlist for test fixtures that
+# look like credentials to the generic-api-key rule (log file names such as
+# "douyin-api.notes.log" also appear in this project's rotation tests).
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Log file names used in rotation tests are not credentials"
+regexTarget = "match"
+regexes = ['''douyin-api\.notes\.log''']

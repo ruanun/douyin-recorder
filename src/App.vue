@@ -26,6 +26,9 @@
               <el-icon><TopRight /></el-icon>
               有更新 v{{ store.availableUpdate.latest_version }}
             </el-button>
+            <el-button text circle title="弹幕字幕工具" @click="showDanmakuTool = true" class="danmaku-tool-btn">
+              <el-icon :size="20"><Upload /></el-icon>
+            </el-button>
             <el-button text circle @click="showSettings = true" class="settings-btn">
               <el-icon :size="20"><Setting /></el-icon>
             </el-button>
@@ -39,6 +42,7 @@
       </main>
 
       <Settings v-model="showSettings" />
+      <DanmakuTool v-model="showDanmakuTool" />
       <el-dialog
         :model-value="lifecycleStatus.exiting"
         title="正在退出"
@@ -59,20 +63,20 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { Setting, TopRight } from '@element-plus/icons-vue'
-import { openUrl } from '@tauri-apps/plugin-opener'
-import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { getLifecycleStatus, onEvent, openExternalUrl } from './api/bridge'
 import type { LifecycleStatus } from './types'
 import { ElMessage } from 'element-plus'
 import { useRecorderStore } from './stores/recorder'
 import RoomList from './components/RoomList.vue'
 import TaskList from './components/TaskList.vue'
 import Settings from './components/Settings.vue'
+import DanmakuTool from './components/DanmakuTool.vue'
 
 const store = useRecorderStore()
 const showSettings = ref(false)
+const showDanmakuTool = ref(false)
 const lifecycleStatus = ref<LifecycleStatus>({ exiting: false, revision: -1, message: null })
-let unlistenLifecycle: UnlistenFn | undefined
+let unlistenLifecycle: (() => void) | undefined
 
 function applyLifecycleStatus(status: LifecycleStatus) {
   if (status.revision <= lifecycleStatus.value.revision) return
@@ -85,15 +89,15 @@ async function openLatestRelease() {
   if (!update) return
 
   try {
-    await openUrl(update.release_url)
+    await openExternalUrl(update.release_url)
   } catch (e) {
     ElMessage.error(`无法打开更新页面: ${e}`)
   }
 }
 
 onMounted(async () => {
-  unlistenLifecycle = await listen<LifecycleStatus>('lifecycle-status-changed', ({ payload }) => applyLifecycleStatus(payload))
-  applyLifecycleStatus(await invoke<LifecycleStatus>('get_lifecycle_status'))
+  unlistenLifecycle = await onEvent<LifecycleStatus>('lifecycle-status-changed', (payload) => applyLifecycleStatus(payload))
+  applyLifecycleStatus(await getLifecycleStatus())
   await store.listenRecordingEvents()
   await Promise.all([
     store.loadRooms(),

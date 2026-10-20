@@ -10,6 +10,8 @@ export interface TaskRow {
   file_path: string | null
   trigger: RecordTask['trigger']
   recovery_from_task_id: number | null
+  danmaku_path: string | null
+  danmaku_count: number | null
   conversionState?: RecordSegment['conversion_state']
   conversionError?: string | null
 }
@@ -30,6 +32,8 @@ export function recordingRows(sessions: RecordTask[]): TaskRow[] {
       file_path: segment.file_path,
       trigger: task.trigger,
       recovery_from_task_id: task.recovery_from_task_id,
+      danmaku_path: segment.danmaku_path ?? task.danmaku_path,
+      danmaku_count: segment.danmaku_count ?? task.danmaku_count,
       conversionState: segment.conversion_state,
       conversionError: segment.conversion_error,
     }))

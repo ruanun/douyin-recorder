@@ -1,7 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { invokeCommand as invoke, onEvent } from '../api/bridge'
 import { ElMessage } from 'element-plus'
 import { DEFAULT_QUALITY } from '../constants/quality'
 import { newerRecovery } from '../utils/recovery'
@@ -14,6 +13,7 @@ import type {
   RecordingStatusChanged,
   RoomAutoRecordingChanged,
   RecordingRecovery,
+  DanmakuStatus,
 } from '../types'
 
 interface RoomRefreshResult {
@@ -27,6 +27,11 @@ export const useRecorderStore = defineStore('recorder', () => {
   const rooms = ref<LiveRoom[]>([])
   const tasks = ref<RecordTask[]>([])
   const recoveries = ref<Record<number, RecordingRecovery>>({})
+  /** Page size for the recording history list. */
+  const TASK_PAGE_SIZE = 200
+  const hasMoreTasks = ref(false)
+  const loadingMoreTasks = ref(false)
+  const danmakuCounts = ref<Record<number, number>>({})
   const loading = ref(false)
   const isRefreshingAll = ref(false)
   const availableUpdate = ref<UpdateInfo | null>(null)
@@ -41,6 +46,8 @@ export const useRecorderStore = defineStore('recorder', () => {
     auto_convert_mp4: false,
     segment_recording_enabled: false,
     segment_duration_minutes: 60,
+    danmaku_recording_enabled: true,
+    auto_export_danmaku_ass: true,
     ffmpeg_reconnect_enabled: false,
     recording_recovery_enabled: false,
     recording_recovery_timeout_secs: 120,
@@ -60,10 +67,11 @@ export const useRecorderStore = defineStore('recorder', () => {
     api_log_max_size_mib: 5,
     api_log_backup_count: 4,
   })
-  let unlistenRecordingStatus: UnlistenFn | null = null
-  let unlistenSegments: UnlistenFn | null = null
-  let unlistenRecovery: UnlistenFn | null = null
-  let unlistenAutoRecordingStatus: UnlistenFn | null = null
+  let unlistenRecordingStatus: (() => void) | null = null
+  let unlistenSegments: (() => void) | null = null
+  let unlistenRecovery: (() => void) | null = null
+  let unlistenAutoRecordingStatus: (() => void) | null = null
+  let unlistenDanmakuStatus: (() => void) | null = null
   let refreshAllPromise: Promise<RoomRefreshResult> | null = null
 
   function upsertTask(task: RecordTask) {
@@ -87,7 +95,7 @@ export const useRecorderStore = defineStore('recorder', () => {
 
   async function listenRecordingEvents() {
     if (!unlistenRecovery) {
-      unlistenRecovery = await listen<RecordingRecovery>('recording-recovery-changed', ({ payload }) => {
+      unlistenRecovery = await onEvent<RecordingRecovery>('recording-recovery-changed', (payload) => {
         const previous = recoveries.value[payload.room_id]
         if (!newerRecovery(previous, payload)) return
         if (payload.media_received && ['recording', 'stable'].includes(payload.phase) &&
@@ -103,10 +111,10 @@ export const useRecorderStore = defineStore('recorder', () => {
       }
     }
     if (!unlistenSegments) {
-      unlistenSegments = await listen<RecordTask>('recording-segments-changed', ({ payload }) => upsertTask(payload))
+      unlistenSegments = await onEvent<RecordTask>('recording-segments-changed', (payload) => upsertTask(payload))
     }
     if (!unlistenRecordingStatus) {
-      unlistenRecordingStatus = await listen<RecordingStatusChanged>('recording-status-changed', ({ payload }) => {
+      unlistenRecordingStatus = await onEvent<RecordingStatusChanged>('recording-status-changed', (payload) => {
         upsertTask(payload.task)
         if (payload.room) upsertRoom(payload.room)
         if (!payload.message) return
@@ -123,7 +131,7 @@ export const useRecorderStore = defineStore('recorder', () => {
       })
     }
     if (!unlistenAutoRecordingStatus) {
-      unlistenAutoRecordingStatus = await listen<RoomAutoRecordingChanged>('room-auto-recording-changed', ({ payload }) => {
+      unlistenAutoRecordingStatus = await onEvent<RoomAutoRecordingChanged>('room-auto-recording-changed', (payload) => {
         upsertRoom(payload.room)
         if (!payload.message) return
 
@@ -133,6 +141,18 @@ export const useRecorderStore = defineStore('recorder', () => {
           ElMessage.warning(payload.message)
         } else {
           ElMessage.info(payload.message)
+        }
+      })
+    }
+    if (!unlistenDanmakuStatus) {
+      unlistenDanmakuStatus = await onEvent<DanmakuStatus>('danmaku-status', (payload) => {
+        danmakuCounts.value[payload.task_id] = payload.total_count
+        if (payload.state === 'connected') {
+          ElMessage.success(`弹幕已连接（任务 ${payload.task_id}）`)
+        } else if (payload.state === 'reconnecting') {
+          // Silent: transient reconnect noise is visible through the task badge.
+        } else if (payload.state === 'stream_closed') {
+          ElMessage.info('直播已结束，弹幕录制停止')
         }
       })
     }
@@ -147,6 +167,8 @@ export const useRecorderStore = defineStore('recorder', () => {
     unlistenRecordingStatus = null
     unlistenAutoRecordingStatus?.()
     unlistenAutoRecordingStatus = null
+    unlistenDanmakuStatus?.()
+    unlistenDanmakuStatus = null
   }
 
   async function loadRooms() {
@@ -256,10 +278,32 @@ export const useRecorderStore = defineStore('recorder', () => {
 
   async function loadTasks() {
     try {
-      const result = await invoke<RecordTask[]>('get_tasks')
+      const result = await invoke<RecordTask[]>('get_tasks', { limit: TASK_PAGE_SIZE, offset: 0 })
       tasks.value = result || []
+      hasMoreTasks.value = (result?.length ?? 0) === TASK_PAGE_SIZE
     } catch (e) {
       console.error('加载任务失败:', e)
+    }
+  }
+
+  /** Append the next page of older history records. */
+  async function loadMoreTasks() {
+    if (loadingMoreTasks.value || !hasMoreTasks.value) return
+    loadingMoreTasks.value = true
+    try {
+      const result = await invoke<RecordTask[]>('get_tasks', {
+        limit: TASK_PAGE_SIZE,
+        offset: tasks.value.length,
+      })
+      const page = result || []
+      const known = new Set(tasks.value.map(task => task.id))
+      // Tasks created while paging shift the offset; skip duplicates.
+      tasks.value.push(...page.filter(task => !known.has(task.id)))
+      hasMoreTasks.value = page.length === TASK_PAGE_SIZE
+    } catch (e) {
+      console.error('加载更多录制历史失败:', e)
+    } finally {
+      loadingMoreTasks.value = false
     }
   }
 
@@ -304,6 +348,14 @@ export const useRecorderStore = defineStore('recorder', () => {
       console.error('转换 MP4 失败:', e)
       throw e
     }
+  }
+
+  async function exportDanmakuAss(options: { taskId?: number; segmentId?: number }): Promise<string> {
+    return invoke<string>('export_danmaku_ass', options)
+  }
+
+  async function burnDanmaku(options: { taskId?: number; segmentId?: number }): Promise<string> {
+    return invoke<string>('burn_danmaku', options)
   }
 
   async function loadSettings() {
@@ -373,11 +425,12 @@ export const useRecorderStore = defineStore('recorder', () => {
   }
 
   return {
-    rooms, tasks, recoveries, cancelRecovery, loading, isRefreshingAll, settings, availableUpdate,
+    rooms, tasks, recoveries, danmakuCounts, cancelRecovery, loading, isRefreshingAll, settings, availableUpdate,
+    hasMoreTasks, loadingMoreTasks, loadMoreTasks,
     listenRecordingEvents, stopListeningRecordingEvents,
     loadRooms, addRoom, refreshRoom, refreshAllRooms, setRoomAutoRecord, setRoomAutoSchedule, setRoomAutoConfig,
     deleteRoom, getRoomTaskCount,
     loadTasks, startRecord, stopRecord, deleteTask, convertToMp4, convertSegmentToMp4, deleteSegment,
-    loadSettings, saveSettings, checkForUpdate, migrateDb
+    loadSettings, saveSettings, checkForUpdate, migrateDb, exportDanmakuAss, burnDanmaku
   }
 })
