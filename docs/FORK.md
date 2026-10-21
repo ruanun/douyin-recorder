@@ -10,7 +10,7 @@
 ```bash
 # 在 GitHub 上 Fork 原仓库后：
 git remote rename origin upstream
-git remote add origin git@github.com:<你的账号>/<仓库名>.git
+git remote add origin git@github.com:ruanun/douyin-recorder.git
 git push -u origin main
 ```
 
@@ -52,7 +52,7 @@ git push origin main --tags
 - Linux 桌面：`.deb` / `.rpm` / `.AppImage`（自动下载 FFmpeg sidecar）
 - Windows 桌面：NSIS `.exe` / `.msi`
 - 服务端：`douyin-recorder-server-<version>-linux-x86_64.tar.gz` + sha256
-- 容器镜像：`ghcr.io/<owner>/<repo>:latest` 与 `:<version>`
+- 容器镜像：`ghcr.io/ruanun/douyin-recorder:latest` 与 `:<version>`
 
 ## 4. 同步上游更新
 
@@ -77,11 +77,11 @@ git merge upstream/main
 
 ## 5. 徽章（可选）
 
-把下面的 `<owner>/<repo>` 换成分发仓库后放进 README：
+README 已使用本仓库的徽章（若你再次 Fork，请换成自己的 `<owner>/<repo>`）：
 
 ```markdown
-[![CI](https://github.com/<owner>/<repo>/actions/workflows/ci.yml/badge.svg)](https://github.com/<owner>/<repo>/actions/workflows/ci.yml)
-[![Release](https://github.com/<owner>/<repo>/actions/workflows/release.yml/badge.svg)](https://github.com/<owner>/<repo>/actions/workflows/release.yml)
+[![CI](https://github.com/ruanun/douyin-recorder/actions/workflows/ci.yml/badge.svg)](https://github.com/ruanun/douyin-recorder/actions/workflows/ci.yml)
+[![Release](https://github.com/ruanun/douyin-recorder/actions/workflows/release.yml/badge.svg)](https://github.com/ruanun/douyin-recorder/actions/workflows/release.yml)
 ```
 
 ## 5. 许可证与致谢（必须）

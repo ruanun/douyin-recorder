@@ -9,7 +9,7 @@
 services:
   douyin-recorder:
     # 本地构建用默认镜像名；想直接用 GHCR 镜像时在 .env 里设置：
-    #   DOUYIN_RECORDER_IMAGE=ghcr.io/<owner>/<repo>:latest
+    #   DOUYIN_RECORDER_IMAGE=ghcr.io/ruanun/douyin-recorder:latest
     # 并执行 `docker compose pull && docker compose up -d --no-build`
     image: "${DOUYIN_RECORDER_IMAGE:-douyin-recorder-server:latest}"
     build: .

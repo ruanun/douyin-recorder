@@ -6,6 +6,8 @@
 
 监控直播间 | 自动/定时录制 | 弹幕录制（分段对齐） | ASS 字幕导出与烧录
 
+[![CI](https://github.com/ruanun/douyin-recorder/actions/workflows/ci.yml/badge.svg)](https://github.com/ruanun/douyin-recorder/actions/workflows/ci.yml)
+[![Release](https://github.com/ruanun/douyin-recorder/actions/workflows/release.yml/badge.svg)](https://github.com/ruanun/douyin-recorder/actions/workflows/release.yml)
 ![Tauri 2](https://img.shields.io/badge/Tauri-2.x-blue?logo=tauri)
 ![Vue 3](https://img.shields.io/badge/Vue-3.x-brightgreen?logo=vuedotjs)
 ![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)
@@ -119,13 +121,13 @@ docker run -d --name douyin-recorder --restart unless-stopped \
   -e DOUYIN_RECORDER_TOKEN=$(openssl rand -hex 16) \
   -e PUID=$(id -u) -e PGID=$(id -g) \
   -v "$PWD/data:/data" \
-  ghcr.io/<owner>/<repo>:latest      # 发布工作流推送的镜像
+  ghcr.io/ruanun/douyin-recorder:latest      # 发布工作流推送的镜像
 ```
 
 也可以把它写进 `.env` 复用 compose：
 
 ```bash
-echo 'DOUYIN_RECORDER_IMAGE=ghcr.io/<owner>/<repo>:latest' >> .env
+echo 'DOUYIN_RECORDER_IMAGE=ghcr.io/ruanun/douyin-recorder:latest' >> .env
 docker compose pull && docker compose up -d --no-build
 ```
 
@@ -199,7 +201,7 @@ ASS 转换规则参考 [danmaku2ass](https://github.com/m13253/danmaku2ass) 与
 | Windows 桌面 | NSIS `.exe` / `.msi`（已内嵌 FFmpeg） |
 | 服务端 | `douyin-recorder-server-<version>-linux-x86_64.tar.gz`（**单二进制已内嵌 Web 前端**）+ systemd 单元 + `.env.example` + sha256 |
 | 校验和 | `SHA256SUMS.txt`（覆盖全部发布文件） |
-| 容器镜像 | `ghcr.io/<owner>/<repo>:latest` 与 `:<version>` |
+| 容器镜像 | `ghcr.io/ruanun/douyin-recorder:latest` 与 `:<version>` |
 
 > 服务端无需另配前端文件：`server/build.rs` 会把 `dist/` 编译进二进制。macOS 桌面版请参考开发指南本地构建（未纳入自动发布）。
 
