@@ -2,6 +2,15 @@
 
 本 fork 的版本号独立于上游。完整功能说明见 [README](README.md) 与 [docs/USAGE.md](docs/USAGE.md)。
 
+## 0.2.2
+
+### 修复
+
+- 发布工作流改为**构建任务直接上传 Release 资产**（草稿 → 全部成功后再发布），
+  不再跨任务搬运数百 MB 产物（此前 `actions/download-artifact` 反复下载失败导致没有发布产物）。
+- 各平台分别附带 `SHA256SUMS-*.txt` 校验文件。
+- README 徽章与 GHCR 镜像地址改为真实仓库 `ruanun/douyin-recorder`。
+
 ## 0.2.1
 
 同步上游 `v0.1.15`（2026-10）：

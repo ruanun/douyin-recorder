@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v0.2.0) — used for manual runs'
+        description: 'Existing release tag to (re)build assets for, e.g. v0.2.0'
         required: false
 
 permissions:
@@ -18,8 +18,25 @@ env:
   FFMPEG_WINDOWS: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip
 
 jobs:
+  # Create the draft release once so every build job can upload straight to it.
+  # This avoids moving hundreds of megabytes between jobs, which repeatedly
+  # failed at the artifact-download step.
+  prepare:
+    name: Prepare draft release
+    runs-on: ubuntu-latest
+    steps:
+      - if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+              --title "$TAG" --generate-notes
+
   linux-desktop:
     name: Linux desktop bundles
+    needs: prepare
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -52,17 +69,20 @@ jobs:
       - run: pnpm build
       - name: Build bundles
         run: npx tauri build --bundles deb,rpm,appimage
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux-desktop
-          path: |
-            target/release/bundle/deb/*.deb
-            target/release/bundle/rpm/*.rpm
-            target/release/bundle/appimage/*.AppImage
-          if-no-files-found: error
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd target/release/bundle
+          sha256sum deb/*.deb rpm/*.rpm appimage/*.AppImage > SHA256SUMS-linux-desktop.txt
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            deb/*.deb rpm/*.rpm appimage/*.AppImage SHA256SUMS-linux-desktop.txt
 
   windows-desktop:
     name: Windows desktop installer
+    needs: prepare
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -91,16 +111,21 @@ jobs:
       - run: pnpm build
       - name: Build installers
         run: npx tauri build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-desktop
-          path: |
-            target/release/bundle/nsis/*.exe
-            target/release/bundle/msi/*.msi
-          if-no-files-found: warn
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = Get-ChildItem target/release/bundle/nsis/*.exe, target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue
+          if (-not $files) { Write-Error 'no installers produced'; exit 1 }
+          $sums = $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name }
+          $sums | Set-Content SHA256SUMS-windows-desktop.txt
+          gh release upload "$env:GITHUB_REF_NAME" --repo "$env:GITHUB_REPOSITORY" --clobber @($files.FullName) SHA256SUMS-windows-desktop.txt
 
   server:
     name: Headless server tarball
+    needs: prepare
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -130,14 +155,16 @@ jobs:
           cp .env.example dist-release/ 2>/dev/null || true
           cp README.md dist-release/ 2>/dev/null || true
           tar -C dist-release -czf "douyin-recorder-server-${VERSION}-linux-x86_64.tar.gz" .
-          sha256sum "douyin-recorder-server-${VERSION}-linux-x86_64.tar.gz" > "douyin-recorder-server-${VERSION}-linux-x86_64.tar.gz.sha256"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: server
-          path: |
-            douyin-recorder-server-*.tar.gz
-            douyin-recorder-server-*.tar.gz.sha256
-          if-no-files-found: error
+          sha256sum "douyin-recorder-server-${VERSION}-linux-x86_64.tar.gz" \
+            > "SHA256SUMS-server.txt"
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            douyin-recorder-server-*.tar.gz SHA256SUMS-server.txt
 
   docker:
     name: Docker image (GHCR)
@@ -170,29 +197,12 @@ jobs:
           cache-to: type=gha,mode=max
 
   publish:
-    name: Attach artifacts to release
-    # Windows is included so its installer ships with the release assets; the
-    # Docker/GHCR image is published by its own job. `always()` keeps the other
-    # platforms' artifacts available if one job fails.
+    name: Publish release
     needs: [linux-desktop, windows-desktop, server]
-    if: always() && startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') && needs.linux-desktop.result == 'success' && needs.windows-desktop.result == 'success' && needs.server.result == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      - name: Generate checksums
-        run: |
-          cd artifacts
-          find . -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
-            -o -name '*.exe' -o -name '*.msi' -o -name '*.tar.gz' \) \
-            -exec sha256sum {} \; | sed 's|\./||' > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            artifacts/linux-desktop/**/*
-            artifacts/windows-desktop/**/*
-            artifacts/server/**/*
-            artifacts/SHA256SUMS.txt
-          fail_on_unmatched_files: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
