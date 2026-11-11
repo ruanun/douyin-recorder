@@ -32,7 +32,7 @@ jobs:
 
   core:
     name: Core (fmt + clippy + tests)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -42,14 +42,16 @@ jobs:
         with:
           workspaces: core -> target
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: |
+          sudo apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 install -y protobuf-compiler
       - run: cargo fmt --all -- --check
       - run: cargo clippy -p douyin-recorder-core --all-targets -- -D warnings
       - run: cargo test -p douyin-recorder-core
 
   server:
     name: Headless server (build)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -64,7 +66,9 @@ jobs:
         with:
           workspaces: server -> target
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: |
+          sudo apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 install -y protobuf-compiler
       # The server embeds dist/ via build.rs.
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
@@ -73,7 +77,7 @@ jobs:
 
   desktop:
     name: Desktop crate (check)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -89,8 +93,8 @@ jobs:
           workspaces: src-tauri -> target
       - name: Install Linux dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 install -y \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev patchelf protobuf-compiler
       - run: pnpm install --frozen-lockfile
