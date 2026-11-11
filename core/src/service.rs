@@ -16,6 +16,7 @@ use crate::{
 };
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 /// Extract a named argument with a clear error.
@@ -212,14 +213,64 @@ pub async fn get_tasks(
     host: &Host,
     limit: Option<u32>,
     offset: Option<u32>,
+    search: Option<String>,
 ) -> Result<Vec<RecordTask>, String> {
     let db = host.state.db.lock().map_err(|e| e.to_string())?;
-    match limit {
-        Some(limit) => db
-            .get_tasks_page(limit, offset.unwrap_or(0))
-            .map_err(|e| e.to_string()),
-        None => db.get_all_tasks().map_err(|e| e.to_string()),
+    let Some(limit) = limit else {
+        return db.get_all_tasks().map_err(|e| e.to_string());
+    };
+    let keys = db
+        .get_task_row_keys(limit, offset.unwrap_or(0), search.as_deref())
+        .map_err(|e| e.to_string())?;
+    let mut order = Vec::new();
+    let mut segment_ids: HashMap<i64, HashSet<i64>> = HashMap::new();
+    let mut whole_tasks = HashSet::new();
+    for (task_id, segment_id) in keys {
+        if !segment_ids.contains_key(&task_id) && !whole_tasks.contains(&task_id) {
+            order.push(task_id);
+        }
+        match segment_id {
+            Some(id) => {
+                segment_ids.entry(task_id).or_default().insert(id);
+            }
+            None => {
+                whole_tasks.insert(task_id);
+            }
+        }
     }
+    let mut page = Vec::with_capacity(order.len());
+    for task_id in order {
+        let mut task = db.get_task(task_id).map_err(|e| e.to_string())?;
+        task.segment_total = task.segments.iter().filter(|s| !s.deleted).count() as i64;
+        // A page of rows may include only some of a task's segments.
+        if let Some(ids) = segment_ids.get(&task_id) {
+            task.segments.retain(|segment| ids.contains(&segment.id));
+        }
+        mark_missing(&mut task);
+        page.push(task);
+    }
+    Ok(page)
+}
+
+fn mark_missing(task: &mut RecordTask) {
+    fn missing(path: Option<&str>) -> bool {
+        path.is_some_and(|path| !std::path::Path::new(path).exists())
+    }
+    if !matches!(task.status.as_str(), "recording" | "finalizing") {
+        task.file_missing = missing(task.file_path.as_deref());
+    }
+    for segment in &mut task.segments {
+        if !matches!(segment.status.as_str(), "recording" | "finalizing") {
+            segment.file_missing = missing(Some(segment.file_path.as_str()));
+        }
+    }
+}
+
+/// Number of visible history rows, so pagination matches the rendered list.
+pub fn count_task_rows(host: &Host, search: Option<String>) -> Result<i64, String> {
+    let db = host.state.db.lock().map_err(|e| e.to_string())?;
+    db.count_task_rows(search.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 pub fn get_recording_recoveries(host: &Host) -> Result<Vec<RecoveryStatus>, String> {
@@ -327,6 +378,74 @@ pub async fn delete_task(host: &Host, id: i64) -> Result<(), String> {
         return Err("分段正在转换，请等待完成后再删除记录".into());
     }
     db.delete_task(id).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+pub struct DeleteRecordsResult {
+    pub deleted: usize,
+    pub skipped: usize,
+}
+
+fn task_is_deletable(
+    state: &crate::AppState,
+    db: &crate::database::Database,
+    id: i64,
+) -> Result<bool, String> {
+    if state.recorder.is_active(id) {
+        return Ok(false);
+    }
+    let task = db.get_task(id).map_err(|e| e.to_string())?;
+    if task.status == "recording" || task.status == "finalizing" {
+        return Ok(false);
+    }
+    Ok(!task
+        .segments
+        .iter()
+        .any(|segment| matches!(segment.conversion_state.as_str(), "queued" | "converting")))
+}
+
+/// Delete selected history rows (task rows and/or segment rows).
+/// Media files are kept; running tasks and pending conversions are skipped.
+pub fn delete_records(
+    host: &Host,
+    task_ids: Vec<i64>,
+    segment_ids: Vec<i64>,
+) -> Result<DeleteRecordsResult, String> {
+    let state = &host.state;
+    let _operation = state.lifecycle.operation()?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let mut result = DeleteRecordsResult::default();
+    for id in task_ids {
+        if task_is_deletable(state, &db, id).unwrap_or(false) && db.delete_task(id).is_ok() {
+            result.deleted += 1;
+        } else {
+            result.skipped += 1;
+        }
+    }
+    for id in segment_ids {
+        match db.hide_segment(id) {
+            Ok(true) => result.deleted += 1,
+            _ => result.skipped += 1,
+        }
+    }
+    Ok(result)
+}
+
+/// Clear every idle history record, keeping running tasks and pending conversions.
+pub fn clear_records(host: &Host) -> Result<DeleteRecordsResult, String> {
+    let state = &host.state;
+    let _operation = state.lifecycle.operation()?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let ids = db.task_ids().map_err(|e| e.to_string())?;
+    let mut result = DeleteRecordsResult::default();
+    for id in ids {
+        if task_is_deletable(state, &db, id).unwrap_or(false) && db.delete_task(id).is_ok() {
+            result.deleted += 1;
+        } else {
+            result.skipped += 1;
+        }
+    }
+    Ok(result)
 }
 
 pub async fn stop_record(host: &Host, task_id: i64) -> Result<RecordTask, String> {
@@ -749,9 +868,22 @@ pub async fn dispatch(host: &Host, command: &str, args: Value) -> Result<Value, 
             to_value(delete_room(host, arg(&args, "id")?, optional(&args, "cascade")?).await)
         }
         "get_room_task_count" => to_value(get_room_task_count(host, arg(&args, "roomId")?)),
-        "get_tasks" => {
-            to_value(get_tasks(host, optional(&args, "limit")?, optional(&args, "offset")?).await)
-        }
+        "get_tasks" => to_value(
+            get_tasks(
+                host,
+                optional(&args, "limit")?,
+                optional(&args, "offset")?,
+                optional(&args, "search")?,
+            )
+            .await,
+        ),
+        "count_task_rows" => to_value(count_task_rows(host, optional(&args, "search")?)),
+        "delete_records" => to_value(delete_records(
+            host,
+            arg(&args, "taskIds")?,
+            arg(&args, "segmentIds")?,
+        )),
+        "clear_records" => to_value(clear_records(host)),
         "delete_task" => to_value(delete_task(host, arg(&args, "id")?).await),
         "start_record" => to_value(start_record(host, arg(&args, "roomId")?).await),
         "stop_record" => to_value(stop_record(host, arg(&args, "taskId")?).await),
@@ -833,6 +965,39 @@ mod tests {
         let runtime = crate::Runtime::with_db_path(&dir.path().join("db.sqlite")).unwrap();
         let result = dispatch(&runtime.host, "not_a_command", json!({})).await;
         assert!(result.unwrap_err().contains("未知命令"));
+    }
+
+    #[test]
+    fn bulk_delete_keeps_running_records_and_clears_idle_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = crate::Runtime::with_db_path(&dir.path().join("db.sqlite")).unwrap();
+        let host = runtime.host.clone();
+        let (room, done, running) = {
+            let db = host.state.db.lock().unwrap();
+            let room = db
+                .add_room_full("douyin", "123", "主播", "", "", "", true)
+                .unwrap();
+            let done = db.add_task(room, "manual").unwrap();
+            db.update_task_status(done, "completed").unwrap();
+            let running = db.add_task(room, "manual").unwrap();
+            db.update_task_status(running, "recording").unwrap();
+            (room, done, running)
+        };
+
+        let result = delete_records(&host, vec![done, running], vec![]).unwrap();
+        assert_eq!((result.deleted, result.skipped), (1, 1));
+        {
+            let db = host.state.db.lock().unwrap();
+            assert!(db.get_task(done).is_err());
+            assert_eq!(db.get_task(running).unwrap().status, "recording");
+            let idle = db.add_task(room, "manual").unwrap();
+            db.update_task_status(idle, "failed").unwrap();
+        }
+        assert_eq!(count_task_rows(&host, None).unwrap(), 2);
+
+        let result = clear_records(&host).unwrap();
+        assert_eq!((result.deleted, result.skipped), (1, 1));
+        assert_eq!(count_task_rows(&host, None).unwrap(), 1);
     }
 
     #[test]

@@ -302,7 +302,7 @@ async fn live_segmentation_keeps_recording_during_conversion_and_flushes_stop() 
     std::fs::remove_file(&first.file_path).unwrap();
     assert!(recorder.is_active(1));
     tokio::time::timeout(Duration::from_secs(25), async {
-        while crate::file_size(Some(&output.path(3))) < 8192 {
+        while crate::file_size(Some(&output.temp_path(3))) < 8192 {
             assert!(recorder.is_active(1));
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

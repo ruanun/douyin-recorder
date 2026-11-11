@@ -33,8 +33,19 @@ export interface RecordTask {
   recovery_from_task_id: number | null
   danmaku_path: string | null
   danmaku_count: number | null
+  anchor_name: string
+  room_title: string
+  quality: string
+  error_message: string | null
+  segment_total: number
+  file_missing: boolean
   segment_output: { file_prefix: string; output_pattern: string; manifest_path: string; duration_secs: number } | null
   segments: RecordSegment[]
+}
+
+export interface DeleteRecordsResult {
+  deleted: number
+  skipped: number
 }
 
 export interface RecordSegment {
@@ -51,6 +62,7 @@ export interface RecordSegment {
   deleted: boolean
   danmaku_path: string | null
   danmaku_count: number | null
+  file_missing: boolean
 }
 
 export interface AppSettings {

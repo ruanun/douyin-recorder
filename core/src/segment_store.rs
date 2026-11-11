@@ -1,5 +1,7 @@
 use crate::database::Database;
-use crate::segments::{segment_time, ManifestEntry, ManifestReader, RecordSegment, SegmentOutput};
+use crate::segments::{
+    part_path, segment_time, ManifestEntry, ManifestReader, RecordSegment, SegmentOutput,
+};
 use rusqlite::{params, OptionalExtension, Result};
 
 impl Database {
@@ -112,6 +114,7 @@ impl Database {
             .iter()
             .map(|segment| {
                 std::fs::metadata(&segment.file_path)
+                    .or_else(|_| std::fs::metadata(part_path(&segment.file_path)))
                     .map(|meta| meta.len() as i64)
                     .unwrap_or(segment.file_size)
             })
@@ -156,6 +159,7 @@ impl Database {
                 // A manifest entry is emitted just before the output handle closes.
                 // The next file can only exist after that close has completed.
                 if output.next_exists(segment.segment_index) {
+                    finalize_part(output, task_id, segment.segment_index);
                     self.close_segment(
                         segment.id,
                         "completed",
@@ -229,6 +233,7 @@ impl Database {
             }
             for segment in self.get_segments(task_id)? {
                 if segment.status == "recording" {
+                    finalize_part(output, task_id, segment.segment_index);
                     self.close_segment(
                         segment.id,
                         "interrupted",
@@ -239,6 +244,18 @@ impl Database {
         }
         self.conn.execute("UPDATE record_segments SET conversion_state = 'failed', conversion_error = '上次转换未正常完成，已保留文件，可重试转换' WHERE conversion_state IN ('queued', 'converting')", [])?;
         Ok(())
+    }
+}
+
+fn finalize_part(output: &SegmentOutput, task_id: i64, index: u32) {
+    if let Err(error) = output.finalize_part(index) {
+        crate::recording_log::event(
+            "WARN",
+            "recording_part_rename_failed",
+            Some(task_id),
+            None,
+            serde_json::json!({"index": index, "error": error}),
+        );
     }
 }
 
@@ -257,6 +274,7 @@ fn read_segment(row: &rusqlite::Row<'_>) -> Result<RecordSegment> {
         deleted: row.get(10)?,
         danmaku_path: row.get(11)?,
         danmaku_count: row.get(12)?,
+        file_missing: false,
     })
 }
 
@@ -333,6 +351,43 @@ mod tests {
         db.finish_segment_conversion(segments[1].id, &Err("模拟失败".into()))
             .unwrap();
         assert!(!db.has_running_tasks().unwrap());
+    }
+
+    #[test]
+    fn in_progress_parts_are_finalized_before_closing_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(&dir.path().join("db")).unwrap();
+        let room = db
+            .add_room_full("douyin", "123", "主播", "", "", "", true)
+            .unwrap();
+        let task = db.add_task(room, "manual").unwrap();
+        let output = SegmentOutput::new(dir.path(), "record", 60);
+        db.set_segment_output(task, &output).unwrap();
+        db.update_task_status(task, "recording").unwrap();
+        std::fs::write(output.temp_path(1), b"data").unwrap();
+        let entries = vec![ManifestEntry {
+            index: 1,
+            start: 0.0,
+            end: 60.0,
+        }];
+        db.observe_segments(task, &output, &entries).unwrap();
+        assert_eq!(db.get_segments(task).unwrap()[0].status, "recording");
+        std::fs::write(output.temp_path(2), b"next").unwrap();
+        db.observe_segments(task, &output, &entries).unwrap();
+        let segments = db.get_segments(task).unwrap();
+        assert_eq!(segments[0].status, "completed");
+        assert_eq!(segments[0].file_size, 4);
+        assert_eq!(segments[1].status, "recording");
+        assert!(Path::new(&output.path(1)).exists());
+        assert!(!Path::new(&output.temp_path(1)).exists());
+        drop(db);
+
+        let db = Database::new(&dir.path().join("db")).unwrap();
+        db.reconcile_incomplete_tasks().unwrap();
+        let segments = db.get_segments(task).unwrap();
+        assert_eq!(segments[1].status, "interrupted");
+        assert_eq!(segments[1].file_size, 4);
+        assert!(Path::new(&output.path(2)).exists());
     }
 
     #[test]

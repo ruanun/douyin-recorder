@@ -99,6 +99,8 @@ pub struct LiveInfo {
     pub avatar_url: String,
     pub is_live: bool,
     pub stream_url: String,
+    /// The saved login cookie was rejected and requests now use only `ttwid`.
+    pub cookie_fallback: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -155,6 +157,10 @@ struct ClientSession {
     proxy: String,
     client: reqwest::Client,
     ttwid: String,
+    /// User cookie captured when the session was built; a change forces a rebuild.
+    cookie: String,
+    /// Set once Douyin rejected the saved cookie; later requests skip it.
+    cookie_fallback: bool,
     created_at: Instant,
 }
 
@@ -281,14 +287,16 @@ impl DouyinParser {
             let mut room_requested = false;
             let mut result = bounded(ticket.as_deref_mut(), async {
                 let needs_session = session.as_ref().is_none_or(|current| {
-                    current.proxy != settings.proxy || current.created_at.elapsed() >= SESSION_TTL
+                    current.proxy != settings.proxy
+                        || current.cookie != settings.cookie
+                        || current.created_at.elapsed() >= SESSION_TTL
                 });
                 if needs_session {
                     *session = Some(build_session(settings, session_url).await?);
                 }
                 room_requested = true;
                 request_room(
-                    session.as_ref().expect("session initialized"),
+                    session.as_mut().expect("session initialized"),
                     &room_id,
                     settings,
                     room_api_url,
@@ -473,6 +481,8 @@ async fn build_session(
         proxy: settings.proxy.clone(),
         client,
         ttwid,
+        cookie: settings.cookie.clone(),
+        cookie_fallback: false,
         created_at: Instant::now(),
     })
 }
@@ -508,7 +518,7 @@ async fn get_ttwid(client: &reqwest::Client, session_url: &str) -> Result<String
 }
 
 async fn request_room(
-    session: &ClientSession,
+    session: &mut ClientSession,
     room_id: &str,
     settings: &AppSettings,
     room_api_url: &str,
@@ -517,7 +527,65 @@ async fn request_room(
     if let Some(trace) = trace {
         trace.stage = "request";
     }
-    let cookie_value = build_cookie_header(&session.ttwid, &settings.cookie);
+
+    let (status, body) = match fetch_room(
+        session,
+        settings,
+        room_api_url,
+        room_id,
+        session.cookie_fallback,
+        trace,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => return Err(error),
+    };
+    if !status.is_success() && trace.is_none() {
+        return Err(ParseError::http(status));
+    }
+
+    // Douyin answers a stale login cookie with 200 and an empty body. Retry
+    // once with only the machine ttwid so monitoring and recording keep going.
+    if !session.cookie_fallback
+        && !settings.cookie.trim().is_empty()
+        && status.is_success()
+        && body.trim().is_empty()
+    {
+        if let Ok((retry_status, retry_body)) =
+            fetch_room(session, settings, room_api_url, room_id, true, trace).await
+        {
+            if retry_status.is_success() && !retry_body.trim().is_empty() {
+                session.cookie_fallback = true;
+                return finish_room(&retry_body, room_id, settings, retry_status, trace, true);
+            }
+        }
+    }
+
+    finish_room(
+        &body,
+        room_id,
+        settings,
+        status,
+        trace,
+        session.cookie_fallback,
+    )
+}
+
+async fn fetch_room(
+    session: &ClientSession,
+    settings: &AppSettings,
+    room_api_url: &str,
+    room_id: &str,
+    ignore_user_cookie: bool,
+    trace: &mut Option<ApiTrace>,
+) -> Result<(reqwest::StatusCode, String), ParseError> {
+    let user_cookie = if ignore_user_cookie {
+        ""
+    } else {
+        &settings.cookie
+    };
+    let cookie_value = build_cookie_header(&session.ttwid, user_cookie);
 
     let mut headers = HeaderMap::new();
     headers.insert(USER_AGENT, HeaderValue::from_static(DOUYIN_UA));
@@ -546,13 +614,9 @@ async fn request_room(
         .send()
         .await
         .map_err(|error| ParseError::new(format!("请求抖音 API 失败: {}", error)))?;
-
     let status = response.status();
     if let Some(trace) = trace {
         trace.http_status = Some(status.as_u16());
-    }
-    if !status.is_success() && trace.is_none() {
-        return Err(ParseError::http(status));
     }
     let body = match response.text().await {
         Ok(body) => body,
@@ -569,18 +633,32 @@ async fn request_room(
             });
         }
     };
+    Ok((status, body))
+}
+
+fn finish_room(
+    body: &str,
+    room_id: &str,
+    settings: &AppSettings,
+    status: reqwest::StatusCode,
+    trace: &mut Option<ApiTrace>,
+    cookie_fallback: bool,
+) -> Result<LiveInfo, ParseError> {
     let parsed = if status.is_success() {
-        parse_room_response_with_conclusion(&body, room_id, &settings.quality)
+        parse_room_response_with_conclusion(body, room_id, &settings.quality)
     } else {
         Err(ParseError::http(status))
     };
     if let Some(trace) = trace {
-        trace.body = Some(body);
+        trace.body = Some(body.to_string());
         if let Ok((_, conclusion)) = &parsed {
             trace.conclusion = conclusion;
         }
     }
-    parsed.map(|(info, _)| info)
+    parsed.map(|(mut info, _)| {
+        info.cookie_fallback = cookie_fallback;
+        info
+    })
 }
 
 #[cfg(test)]
@@ -617,9 +695,29 @@ fn parse_room_response_with_conclusion(
                         avatar_url: String::new(),
                         is_live: false,
                         stream_url: String::new(),
+                        cookie_fallback: false,
                     },
                     "room has finished 明确下播",
                 ));
+            }
+            // Business errors (e.g. status_code 4001038) carry a human prompt
+            // instead of room data; surface it instead of a serde field error.
+            if let Ok(response) = serde_json::from_str::<serde_json::Value>(body) {
+                let prompts = response
+                    .pointer("/data/prompts")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default();
+                if !prompts.is_empty() {
+                    let code = response
+                        .get("status_code")
+                        .and_then(|value| value.as_i64())
+                        .unwrap_or(0);
+                    return Err(ParseError::new(if code == 0 {
+                        format!("抖音提示：{}，稍后重试", prompts)
+                    } else {
+                        format!("抖音提示：{}（状态码 {}），稍后重试", prompts, code)
+                    }));
+                }
             }
             return Err(ParseError::new(format!(
                 "解析 API 响应失败: {} (响应: {})",
@@ -674,6 +772,7 @@ fn parse_room_response_with_conclusion(
             avatar_url,
             is_live,
             stream_url,
+            cookie_fallback: false,
         },
         if is_live {
             "房间状态显示直播中"
@@ -1373,6 +1472,14 @@ mod tests {
     }
 
     #[test]
+    fn business_error_prompt_is_surfaced_instead_of_serde_error() {
+        let body = r#"{"data":{"prompts":"该内容暂时无法无法查看"},"extra":{"now":1794404115385},"status_code":4001038}"#;
+        let error = parse_room_response(body, "123", "ORIGIN").unwrap_err();
+        assert!(error.to_string().contains("该内容暂时无法无法查看"));
+        assert!(error.to_string().contains("4001038"));
+    }
+
+    #[test]
     fn room_finished_message_does_not_depend_on_localized_prompt_or_status_code() {
         for response in [
             json!({"data": {"message": "room has finished"}}),
@@ -1629,6 +1736,60 @@ mod tests {
         assert!(should_refresh_session(&error, 0));
         assert!(!should_refresh_session(&error, 1));
         assert_eq!(error.to_string(), "抖音 API 拒绝了当前会话: HTTP 444");
+    }
+
+    #[tokio::test]
+    async fn stale_user_cookie_is_dropped_after_an_empty_room_response() {
+        use super::RequestSource;
+        use crate::settings::AppSettings;
+
+        let live = r#"{"data":{"data":[{"status":2,"id_str":"99"}]}}"#;
+        let (base, server) = mock_server(vec![
+            mock_response(200, "{}", true),
+            mock_response(200, "", false),
+            mock_response(200, live, false),
+        ])
+        .await;
+        let parser = super::DouyinParser::new();
+        let settings = AppSettings {
+            cookie: "sessionid=stale; bd_ticket_guard=old".to_string(),
+            ..Default::default()
+        };
+        let info = parser
+            .parse_with_endpoints(
+                "https://live.douyin.com/123",
+                &settings,
+                RequestSource::ManualRefresh,
+                &base,
+                &format!("{base}/room"),
+            )
+            .await
+            .unwrap();
+        assert!(info.cookie_fallback);
+        assert!(info.is_live);
+
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(requests[1].contains("sessionid=stale"));
+        assert!(!requests[2].contains("sessionid=stale"));
+        assert!(requests[2].contains("ttwid=test-session"));
+
+        // The fallback is cached on the session: later parses skip the stale cookie.
+        let (base, server) = mock_server(vec![mock_response(200, live, false)]).await;
+        let info = parser
+            .parse_with_endpoints(
+                "https://live.douyin.com/123",
+                &settings,
+                RequestSource::ManualRefresh,
+                &base,
+                &format!("{base}/room"),
+            )
+            .await
+            .unwrap();
+        assert!(info.cookie_fallback);
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(!requests[0].contains("sessionid=stale"));
     }
 
     #[test]

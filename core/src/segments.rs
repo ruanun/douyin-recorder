@@ -3,6 +3,14 @@ use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+/// In-progress recordings keep this suffix until FFmpeg has closed the file.
+pub const PART_SUFFIX: &str = ".part";
+
+/// Final path used by the database/UI while FFmpeg writes `<path>.part`.
+pub fn part_path(path: &str) -> String {
+    format!("{path}{PART_SUFFIX}")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SegmentOutput {
     pub file_prefix: String,
@@ -15,7 +23,10 @@ impl SegmentOutput {
     pub fn new(directory: &Path, name: &str, duration_secs: u64) -> Self {
         let file_prefix = directory.join(name).to_string_lossy().into_owned();
         Self {
-            output_pattern: format!("{}_part%03d.flv", file_prefix.replace('%', "%%")),
+            output_pattern: format!(
+                "{}_part%03d.flv{PART_SUFFIX}",
+                file_prefix.replace('%', "%%")
+            ),
             manifest_path: directory
                 .join(".recording-meta")
                 .join(format!("{name}.csv"))
@@ -30,9 +41,42 @@ impl SegmentOutput {
         format!("{}_part{index:03}.flv", self.file_prefix)
     }
 
+    /// Path FFmpeg writes to; renamed to `path` once the file is closed.
+    pub fn temp_path(&self, index: u32) -> String {
+        part_path(&self.path(index))
+    }
+
+    pub fn finalize_part(&self, index: u32) -> Result<(), String> {
+        rename_part(
+            Path::new(&self.temp_path(index)),
+            Path::new(&self.path(index)),
+        )
+    }
+
+    /// Renames every leftover in-progress segment; errors name the files that failed.
+    pub fn finalize_parts(&self) -> Vec<Result<(), String>> {
+        let Some(directory) = Path::new(&self.file_prefix).parent() else {
+            return vec![Err("分段目录无效".into())];
+        };
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return vec![];
+        };
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.ends_with(PART_SUFFIX)
+                    .then(|| self.index_of(&name))
+                    .flatten()
+                    .map(|index| self.finalize_part(index))
+            })
+            .collect()
+    }
+
     pub fn index_of(&self, filename: &str) -> Option<u32> {
         let prefix = Path::new(&self.file_prefix).file_name()?.to_str()?;
         let suffix = filename.strip_prefix(prefix)?.strip_prefix("_part")?;
+        let suffix = suffix.strip_suffix(PART_SUFFIX).unwrap_or(suffix);
         let digits = suffix
             .strip_suffix(".flv")
             .or_else(|| suffix.strip_suffix(".mp4"))?;
@@ -44,8 +88,9 @@ impl SegmentOutput {
 
     pub fn next_exists(&self, index: u32) -> bool {
         index.checked_add(1).is_some_and(|i| {
-            let path = PathBuf::from(self.path(i));
-            path.exists() || path.with_extension("mp4").exists()
+            Path::new(&self.temp_path(i)).exists()
+                || Path::new(&self.path(i)).exists()
+                || Path::new(&self.path(i)).with_extension("mp4").exists()
         })
     }
 
@@ -60,17 +105,42 @@ impl SegmentOutput {
             if !entry.file_type().map_err(|e| e.to_string())?.is_file() {
                 continue;
             }
-            if let Some(index) = self.index_of(&entry.file_name().to_string_lossy()) {
-                // A surviving FLV is authoritative until the conversion is committed.
-                if entry.path().extension().is_some_and(|ext| ext == "flv")
-                    || !files.contains_key(&index)
-                {
-                    files.insert(index, entry.path());
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Some(index) = self.index_of(&name) {
+                // In-progress files map to their final name; a surviving FLV is
+                // authoritative until the conversion is committed.
+                let path = if name.ends_with(PART_SUFFIX) {
+                    PathBuf::from(self.path(index))
+                } else {
+                    entry.path()
+                };
+                if path.extension().is_some_and(|ext| ext == "flv") || !files.contains_key(&index) {
+                    files.insert(index, path);
                 }
             }
         }
         Ok(files)
     }
+}
+
+/// Renames `<path>.part` to `<path>`; missing in-progress file is not an error.
+pub fn finalize_part_file(path: &str) -> Result<(), String> {
+    rename_part(Path::new(&part_path(path)), Path::new(path))
+}
+
+fn rename_part(temporary: &Path, final_path: &Path) -> Result<(), String> {
+    if !temporary.exists() {
+        return Ok(());
+    }
+    // Never clobber an existing recording that shares the final name.
+    if final_path.exists() {
+        return Err(format!(
+            "目标文件已存在，拒绝覆盖: {}",
+            final_path.display()
+        ));
+    }
+    std::fs::rename(temporary, final_path)
+        .map_err(|e| format!("重命名录制文件失败 {}: {e}", temporary.display()))
 }
 
 pub fn safe_filename(value: &str) -> String {
@@ -108,6 +178,9 @@ pub struct RecordSegment {
     pub deleted: bool,
     pub danmaku_path: Option<String>,
     pub danmaku_count: Option<i64>,
+    /// The media file no longer exists on disk; filled by the service.
+    #[serde(default)]
+    pub file_missing: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -242,5 +315,46 @@ mod tests {
             .index_of(&name.replace("001.flv", "001.tmp.mp4"))
             .is_none());
         assert_eq!(safe_filename("../坏:名/称\\?\n"), "_坏_名_称___");
+    }
+
+    #[test]
+    fn in_progress_parts_are_listed_and_renamed_without_overwriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = SegmentOutput::new(dir.path(), "主播_1", 60);
+        assert!(output.output_pattern.ends_with("_part%03d.flv.part"));
+        std::fs::write(output.temp_path(1), b"one").unwrap();
+        std::fs::write(output.temp_path(2), b"two").unwrap();
+        let files = output.files().unwrap();
+        assert_eq!(files.keys().copied().collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(files[&1], PathBuf::from(output.path(1)));
+        assert!(output.next_exists(1));
+        let temp_name = Path::new(&output.temp_path(1))
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(output.index_of(&temp_name), Some(1));
+        assert!(output
+            .finalize_parts()
+            .into_iter()
+            .all(|result| result.is_ok()));
+        assert!(!Path::new(&output.temp_path(1)).exists());
+        assert_eq!(std::fs::read(output.path(1)).unwrap(), b"one");
+        std::fs::write(output.temp_path(3), b"three").unwrap();
+        std::fs::write(output.path(3), b"keep").unwrap();
+        assert!(output.finalize_part(3).is_err());
+        assert_eq!(std::fs::read(output.path(3)).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn single_file_part_is_renamed_only_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.flv");
+        let path = path.to_str().unwrap();
+        assert!(finalize_part_file(path).is_ok());
+        std::fs::write(part_path(path), b"x").unwrap();
+        assert!(finalize_part_file(path).is_ok());
+        assert_eq!(std::fs::read(path).unwrap(), b"x");
+        assert!(!Path::new(&part_path(path)).exists());
     }
 }

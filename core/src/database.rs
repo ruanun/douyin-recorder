@@ -38,8 +38,29 @@ pub struct RecordTask {
     pub recovery_from_task_id: Option<i64>,
     pub danmaku_path: Option<String>,
     pub danmaku_count: Option<i64>,
+    #[serde(default)]
+    pub anchor_name: String,
+    #[serde(default)]
+    pub room_title: String,
+    #[serde(default)]
+    pub quality: String,
+    #[serde(default)]
+    pub error_message: Option<String>,
     pub segment_output: Option<crate::segments::SegmentOutput>,
     pub segments: Vec<crate::segments::RecordSegment>,
+    /// Number of non-deleted segments; filled by the service for list pages.
+    #[serde(default)]
+    pub segment_total: i64,
+    /// The media file referenced above no longer exists on disk.
+    #[serde(default)]
+    pub file_missing: bool,
+}
+
+fn search_pattern(search: Option<&str>) -> Option<String> {
+    search
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("%{value}%"))
 }
 
 impl rusqlite::types::FromSql for AutoMonitorMode {
@@ -270,7 +291,14 @@ impl Database {
             .prepare("PRAGMA table_info(record_tasks)")?
             .query_map([], |row| row.get::<_, String>(1))?
             .collect::<Result<Vec<_>>>()?;
-        for (name, definition) in [("danmaku_path", "TEXT"), ("danmaku_count", "INTEGER")] {
+        for (name, definition) in [
+            ("danmaku_path", "TEXT"),
+            ("danmaku_count", "INTEGER"),
+            ("anchor_name", "TEXT DEFAULT ''"),
+            ("room_title", "TEXT DEFAULT ''"),
+            ("quality", "TEXT DEFAULT ''"),
+            ("error_message", "TEXT"),
+        ] {
             if !columns.iter().any(|column| column == name) {
                 self.conn.execute(
                     &format!("ALTER TABLE record_tasks ADD COLUMN {name} {definition}"),
@@ -278,6 +306,15 @@ impl Database {
                 )?;
             }
         }
+        // Older rows predate these snapshots; fill what the room still knows.
+        self.conn.execute(
+            "UPDATE record_tasks SET anchor_name = COALESCE((SELECT anchor_name FROM live_rooms WHERE live_rooms.id = record_tasks.room_id), '') WHERE anchor_name = ''",
+            [],
+        )?;
+        self.conn.execute(
+            "UPDATE record_tasks SET room_title = COALESCE((SELECT room_title FROM live_rooms WHERE live_rooms.id = record_tasks.room_id), '') WHERE room_title = ''",
+            [],
+        )?;
         self.init_segments()?;
 
         Ok(())
@@ -453,6 +490,37 @@ impl Database {
         Ok(count)
     }
 
+    /// Visible history rows: every non-deleted segment is one row, and a task
+    /// without segments is one row. Tasks whose segments were all removed from
+    /// the history do not count. `search` matches file name, anchor or room title.
+    pub fn count_task_rows(&self, search: Option<&str>) -> Result<i64> {
+        let pattern = search_pattern(search);
+        self.conn.query_row(
+            "SELECT COUNT(*) FROM record_tasks t
+             LEFT JOIN record_segments s ON s.task_id = t.id AND s.deleted = 0
+             LEFT JOIN live_rooms r ON r.id = t.room_id
+             WHERE (s.id IS NOT NULL
+                OR NOT EXISTS (SELECT 1 FROM record_segments x WHERE x.task_id = t.id))
+               AND (?1 IS NULL
+                OR t.file_path LIKE ?1
+                OR r.anchor_name LIKE ?1
+                OR r.room_title LIKE ?1)",
+            rusqlite::params![pattern],
+            |row| row.get(0),
+        )
+    }
+
+    /// Ids only, newest first: clearing history must not load every task row.
+    pub fn task_ids(&self) -> Result<Vec<i64>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT id FROM record_tasks ORDER BY id DESC")?;
+        let ids = statement
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
     pub fn has_running_tasks_for_room(&self, room_id: i64) -> Result<bool> {
         let count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM record_tasks WHERE room_id = ?1 AND (status IN ('recording', 'finalizing') OR id IN (SELECT task_id FROM record_segments WHERE conversion_state IN ('queued', 'converting')))",
@@ -486,7 +554,7 @@ impl Database {
         Ok(())
     }
 
-    const TASK_COLUMNS: &'static str = "id, room_id, status, start_time, end_time, file_path, file_size, trigger, recovery_from_task_id, danmaku_path, danmaku_count";
+    const TASK_COLUMNS: &'static str = "id, room_id, status, start_time, end_time, file_path, file_size, trigger, recovery_from_task_id, danmaku_path, danmaku_count, anchor_name, room_title, quality, error_message";
 
     fn read_task(&self, row: &rusqlite::Row<'_>) -> Result<RecordTask> {
         Ok(RecordTask {
@@ -501,13 +569,19 @@ impl Database {
             recovery_from_task_id: row.get(8)?,
             danmaku_path: row.get(9)?,
             danmaku_count: row.get(10)?,
+            anchor_name: row.get(11)?,
+            room_title: row.get(12)?,
+            quality: row.get(13)?,
+            error_message: row.get(14)?,
             segment_output: self.get_segment_output(row.get(0)?)?,
             segments: self.get_segments(row.get(0)?)?,
+            segment_total: 0,
+            file_missing: false,
         })
     }
 
     /// Every task, newest first. Used by internal reconciliation and tooling;
-    /// the UI loads pages through [`Database::get_tasks_page`].
+    /// the UI loads pages through [`Database::get_task_row_keys`].
     pub fn get_all_tasks(&self) -> Result<Vec<RecordTask>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {} FROM record_tasks ORDER BY id DESC",
@@ -519,26 +593,56 @@ impl Database {
         Ok(tasks)
     }
 
-    /// Newest-first page of tasks. The history page rarely needs more than the
-    /// most recent entries, and rendering every row made the UI unusable once
-    /// thousands of recordings existed.
-    pub fn get_tasks_page(&self, limit: u32, offset: u32) -> Result<Vec<RecordTask>> {
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT {} FROM record_tasks ORDER BY id DESC LIMIT ?1 OFFSET ?2",
-            Self::TASK_COLUMNS
-        ))?;
-        let tasks = stmt
+    /// Keys for one page of visible history rows, newest first: each non-deleted
+    /// segment, plus one empty key for every task that has no segments at all.
+    /// The caller expands the keys into tasks and keeps only the listed segments.
+    pub fn get_task_row_keys(
+        &self,
+        limit: u32,
+        offset: u32,
+        search: Option<&str>,
+    ) -> Result<Vec<(i64, Option<i64>)>> {
+        let pattern = search_pattern(search);
+        let mut stmt = self.conn.prepare(
+            "SELECT task_id, segment_id FROM (
+                 SELECT t.id AS task_id, s.id AS segment_id,
+                        COALESCE(s.start_time, t.start_time) AS row_time,
+                        t.id AS sort_task, COALESCE(s.segment_index, 0) AS sort_segment
+                 FROM record_tasks t
+                 JOIN record_segments s ON s.task_id = t.id AND s.deleted = 0
+                 LEFT JOIN live_rooms r ON r.id = t.room_id
+                 WHERE ?3 IS NULL
+                    OR t.file_path LIKE ?3
+                    OR r.anchor_name LIKE ?3
+                    OR r.room_title LIKE ?3
+                 UNION ALL
+                 SELECT t.id, NULL, t.start_time, t.id, 0
+                 FROM record_tasks t
+                 LEFT JOIN live_rooms r ON r.id = t.room_id
+                 WHERE NOT EXISTS (SELECT 1 FROM record_segments s WHERE s.task_id = t.id)
+                   AND (?3 IS NULL
+                    OR t.file_path LIKE ?3
+                    OR r.anchor_name LIKE ?3
+                    OR r.room_title LIKE ?3)
+             )
+             ORDER BY row_time DESC, sort_task DESC, sort_segment DESC
+             LIMIT ?1 OFFSET ?2",
+        )?;
+        let keys = stmt
             .query_map(
-                rusqlite::params![i64::from(limit), i64::from(offset)],
-                |row| self.read_task(row),
+                rusqlite::params![i64::from(limit), i64::from(offset), pattern],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )?
             .collect::<Result<Vec<_>>>()?;
-        Ok(tasks)
+        Ok(keys)
     }
 
     pub fn get_task(&self, id: i64) -> Result<RecordTask> {
         self.conn.query_row(
-            "SELECT id, room_id, status, start_time, end_time, file_path, file_size, trigger, recovery_from_task_id, danmaku_path, danmaku_count FROM record_tasks WHERE id = ?1",
+            &format!(
+                "SELECT {} FROM record_tasks WHERE id = ?1",
+                Self::TASK_COLUMNS
+            ),
             [id],
             |row| {
                 Ok(RecordTask {
@@ -553,19 +657,46 @@ impl Database {
                     recovery_from_task_id: row.get(8)?,
                     danmaku_path: row.get(9)?,
                     danmaku_count: row.get(10)?,
+                    anchor_name: row.get(11)?,
+                    room_title: row.get(12)?,
+                    quality: row.get(13)?,
+                    error_message: row.get(14)?,
                     segment_output: self.get_segment_output(row.get(0)?)?,
                     segments: self.get_segments(row.get(0)?)?,
+                    segment_total: 0,
+                    file_missing: false,
                 })
             },
         )
     }
 
     pub fn add_task(&self, room_id: i64, trigger: &str) -> Result<i64> {
+        self.add_task_with_details(room_id, trigger, "", "", "")
+    }
+
+    /// Snapshot the anchor, title and quality at start time so history stays
+    /// readable after the room is renamed or deleted.
+    pub fn add_task_with_details(
+        &self,
+        room_id: i64,
+        trigger: &str,
+        anchor_name: &str,
+        room_title: &str,
+        quality: &str,
+    ) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO record_tasks (room_id, trigger) VALUES (?1, ?2)",
-            rusqlite::params![room_id, trigger],
+            "INSERT INTO record_tasks (room_id, trigger, anchor_name, room_title, quality) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![room_id, trigger, anchor_name, room_title, quality],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn set_task_error(&self, task_id: i64, message: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE record_tasks SET error_message = ?1 WHERE id = ?2",
+            rusqlite::params![message, task_id],
+        )?;
+        Ok(())
     }
 
     pub fn link_recovery(&self, task_id: i64, previous: i64) -> Result<()> {
@@ -660,13 +791,22 @@ impl Database {
         for (id, file_path) in stale_tasks {
             if self.get_segment_output(id)?.is_some() {
                 let size = self.segment_total_size(id)?;
-                self.finish_task(
-                    id,
-                    if size > 0 { "interrupted" } else { "failed" },
-                    None,
-                    size,
-                )?;
+                let status = if size > 0 { "interrupted" } else { "failed" };
+                self.finish_task(id, status, None, size)?;
+                self.set_task_error(id, reconcile_message(status))?;
                 continue;
+            }
+            if let Some(path) = file_path.as_deref() {
+                // A crash can leave the in-progress suffix behind.
+                if let Err(error) = crate::segments::finalize_part_file(path) {
+                    crate::recording_log::event(
+                        "WARN",
+                        "recording_part_rename_failed",
+                        Some(id),
+                        None,
+                        serde_json::json!({"error": error}),
+                    );
+                }
             }
             let file_size = file_path
                 .as_deref()
@@ -679,9 +819,18 @@ impl Database {
                 "failed"
             };
             self.finish_task(id, status, file_path.as_deref(), file_size)?;
+            self.set_task_error(id, reconcile_message(status))?;
         }
 
         Ok(())
+    }
+}
+
+fn reconcile_message(status: &str) -> &'static str {
+    if status == "failed" {
+        "录制未生成有效文件"
+    } else {
+        "应用退出时录制未完成，已保留现有文件"
     }
 }
 
@@ -1046,30 +1195,70 @@ mod tests {
     }
 
     #[test]
-    fn task_pages_are_newest_first_and_do_not_overlap() {
+    fn task_row_pages_expand_visible_segments_and_skip_hidden_ones() {
         let dir = tempfile::tempdir().unwrap();
         let db = Database::new(&dir.path().join("db")).unwrap();
         let room = db
             .add_room_full("douyin", "1", "anchor", "", "", "", true)
             .unwrap();
-        for _ in 0..5 {
-            db.add_task(room, "manual").unwrap();
-        }
-        let first = db.get_tasks_page(2, 0).unwrap();
-        let second = db.get_tasks_page(2, 2).unwrap();
-        let third = db.get_tasks_page(2, 4).unwrap();
-        assert_eq!(first.len(), 2);
-        assert_eq!(second.len(), 2);
-        assert_eq!(third.len(), 1);
-        let ids: Vec<i64> = first
-            .iter()
-            .chain(second.iter())
-            .chain(third.iter())
-            .map(|task| task.id)
+        let ids: Vec<i64> = (0..4)
+            .map(|_| db.add_task(room, "manual").unwrap())
             .collect();
-        let mut sorted = ids.clone();
-        sorted.sort_unstable_by(|a, b| b.cmp(a));
-        assert_eq!(ids, sorted, "pages must stay newest-first and contiguous");
-        assert_eq!(db.get_all_tasks().unwrap().len(), 5);
+        let segmented = db.add_task(room, "manual").unwrap();
+        let start = db.get_task(segmented).unwrap().start_time;
+        db.add_segment(segmented, 1, "/tmp/part1.flv", &start)
+            .unwrap();
+        db.add_segment(segmented, 2, "/tmp/part2.flv", &start)
+            .unwrap();
+        let segments = db.get_segments(segmented).unwrap();
+        for segment in &segments {
+            db.conn
+                .execute(
+                    "UPDATE record_segments SET status = 'completed' WHERE id = ?1",
+                    [segment.id],
+                )
+                .unwrap();
+        }
+        assert!(db.hide_segment(segments[1].id).unwrap());
+
+        let hidden_only = db.add_task(room, "manual").unwrap();
+        let hidden_start = db.get_task(hidden_only).unwrap().start_time;
+        db.add_segment(hidden_only, 1, "/tmp/part1.flv", &hidden_start)
+            .unwrap();
+        let hidden_segment = db.get_segments(hidden_only).unwrap()[0].id;
+        db.conn
+            .execute(
+                "UPDATE record_segments SET status = 'completed' WHERE id = ?1",
+                [hidden_segment],
+            )
+            .unwrap();
+        assert!(db.hide_segment(hidden_segment).unwrap());
+
+        assert_eq!(db.count_task_rows(None).unwrap(), 5);
+        assert_eq!(
+            db.get_task_row_keys(2, 0, None).unwrap(),
+            vec![(segmented, Some(segments[0].id)), (ids[3], None)]
+        );
+        let rest: Vec<i64> = db
+            .get_task_row_keys(3, 2, None)
+            .unwrap()
+            .into_iter()
+            .map(|(task, _)| task)
+            .collect();
+        assert_eq!(rest, vec![ids[2], ids[1], ids[0]]);
+
+        db.conn
+            .execute(
+                "UPDATE record_tasks SET file_path = '/data/unique_name.flv' WHERE id = ?1",
+                [ids[0]],
+            )
+            .unwrap();
+        assert_eq!(db.count_task_rows(Some("unique_name")).unwrap(), 1);
+        assert_eq!(db.count_task_rows(Some("anchor")).unwrap(), 5);
+        assert_eq!(db.count_task_rows(Some("no-such-room")).unwrap(), 0);
+        assert_eq!(
+            db.get_task_row_keys(5, 0, Some("unique_name")).unwrap(),
+            vec![(ids[0], None)]
+        );
     }
 }

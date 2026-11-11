@@ -4,7 +4,31 @@
       <div class="card-header">
         <div class="card-title">
           <span class="title-text">录制任务</span>
-          <span class="title-count" v-if="tasks.length">{{ tasks.length }}</span>
+          <span class="title-count" v-if="totalRows">{{ totalRows }}</span>
+        </div>
+        <div class="card-search">
+          <el-input
+            v-model="searchInput"
+            size="small"
+            clearable
+            placeholder="搜索文件名 / 主播"
+            :prefix-icon="Search"
+          />
+        </div>
+        <div class="card-actions" v-if="tasks.length">
+          <el-checkbox
+            :model-value="allSelected"
+            :indeterminate="someSelected"
+            @change="toggleAll"
+          >全选本页</el-checkbox>
+          <el-button
+            size="small"
+            type="danger"
+            plain
+            :disabled="selected.size === 0"
+            @click="deleteSelected"
+          >批量删除{{ selected.size ? ` (${selected.size})` : '' }}</el-button>
+          <el-button size="small" @click="clearAll">清空全部</el-button>
         </div>
       </div>
     </template>
@@ -18,8 +42,8 @@
           <path d="M24 24v4l3 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
       </div>
-      <p class="empty-title">暂无录制任务</p>
-      <p class="empty-desc">在房间列表中点击录制按钮开始</p>
+      <p class="empty-title">{{ search ? '没有匹配的录制记录' : '暂无录制任务' }}</p>
+      <p class="empty-desc">{{ search ? '换个关键词试试，或清空搜索' : '在房间列表中点击录制按钮开始' }}</p>
     </div>
 
     <!-- Task Cards -->
@@ -36,13 +60,18 @@
 
           <div class="task-main">
             <div class="task-header-row">
+              <el-checkbox
+                class="task-select"
+                :model-value="selected.has(task.rowKey)"
+                @change="toggleRow(task)"
+              />
               <span class="task-status-badge" :class="task.status">
                 <span class="badge-dot"></span>
                 {{ getStatusText(task.status, task.conversionState) }}
               </span>
               <span v-if="task.trigger === 'auto'" class="task-trigger-badge">自动</span>
               <span v-if="task.recovery_from_task_id != null" class="task-trigger-badge" :title="`接续任务 ${task.recovery_from_task_id}`">断流恢复</span>
-              <span v-if="task.segmentIndex" class="task-trigger-badge">第 {{ task.segmentIndex }} 段</span>
+              <span v-if="task.segmentIndex" class="task-trigger-badge">第 {{ task.segmentIndex }} 段<template v-if="task.segmentTotal"> · 共 {{ task.segmentTotal }} 段</template></span>
               <span
                 v-if="danmakuCount(task.id) > 0"
                 class="task-trigger-badge danmaku-badge"
@@ -51,12 +80,21 @@
               <span v-else-if="task.danmaku_count && task.danmaku_count > 0" class="task-trigger-badge danmaku-badge">{{ task.danmaku_count }} 弹幕</span>
               <span class="task-time">{{ formatTime(task.start_time) }}</span>
             </div>
+            <div class="task-meta">
+              <span v-if="task.anchor_name" class="task-anchor">{{ task.anchor_name }}</span>
+              <span v-if="task.room_title" class="task-room-title" :title="task.room_title">{{ task.room_title }}</span>
+              <span v-if="task.quality" class="task-quality">{{ task.quality }}</span>
+              <span v-if="formatDuration(task)" class="task-meta-item">时长 {{ formatDuration(task) }}</span>
+              <span class="task-meta-item">{{ formatBytes(task.file_size) }}</span>
+              <span v-if="task.file_missing" class="task-missing">文件缺失</span>
+            </div>
             <div class="task-path" v-if="task.file_path">
               {{ task.file_path.split(/[/\\]/).pop() }}
             </div>
             <div class="task-path danmaku-path" v-if="task.danmaku_path">
               弹幕：{{ task.danmaku_path.split(/[/\\]/).pop() }}
             </div>
+            <div v-if="task.error_message" class="task-error">{{ task.error_message }}</div>
             <div v-if="task.conversionError" class="segment-error">{{ task.conversionError }}</div>
           </div>
 
@@ -119,11 +157,17 @@
           </div>
         </div>
       </TransitionGroup>
-      <div v-if="hasMoreTasks" class="load-more">
-        <el-button :loading="loadingMoreTasks" @click="store.loadMoreTasks()">
-          加载更多历史
-        </el-button>
-        <span class="load-more-hint">已显示最近 {{ tasks.length }} 条</span>
+      <div v-if="totalRows > taskPageSize" class="task-pagination">
+        <el-pagination
+          background
+          layout="total, sizes, prev, pager, next"
+          :total="totalRows"
+          :page-size="taskPageSize"
+          :current-page="taskPage"
+          :page-sizes="[20, 50, 100]"
+          @current-change="changePage"
+          @size-change="changeSize"
+        />
       </div>
     </div>
   </el-card>
@@ -131,18 +175,107 @@
 
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRecorderStore } from '../stores/recorder'
-import { ElMessage } from 'element-plus'
-import { Delete, VideoPause, FolderOpened, Folder, Switch, ChatDotSquare } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Delete, VideoPause, FolderOpened, Folder, Switch, ChatDotSquare, Search } from '@element-plus/icons-vue'
 import { isDesktop, openRecordedFile, revealRecordedFile } from '../api/bridge'
-import type { RecordSegment } from '../types'
+import type { DeleteRecordsResult, RecordSegment } from '../types'
 import { recordingRows, type TaskRow } from '../utils/recordingRows'
 
 const store = useRecorderStore()
-const { tasks: sessions, settings, danmakuCounts, hasMoreTasks, loadingMoreTasks } = storeToRefs(store)
+const { tasks: sessions, settings, danmakuCounts, taskPage, taskPageSize, totalRows, search } = storeToRefs(store)
 
 const tasks = computed(() => recordingRows(sessions.value))
+
+const searchInput = ref(search.value)
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+watch(searchInput, (value) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  // Debounce so typing does not fire a request per keystroke.
+  searchTimer = setTimeout(() => store.setSearch(value), 300)
+})
+watch(search, (value) => {
+  if (value !== searchInput.value) searchInput.value = value
+})
+
+const selected = ref<Set<string>>(new Set())
+const allSelected = computed(
+  () => tasks.value.length > 0 && tasks.value.every(task => selected.value.has(task.rowKey))
+)
+const someSelected = computed(
+  () => !allSelected.value && tasks.value.some(task => selected.value.has(task.rowKey))
+)
+
+// A reload replaces the visible rows; stale keys would target invisible records.
+watch(tasks, () => {
+  selected.value = new Set()
+})
+
+function toggleRow(task: TaskRow) {
+  const next = new Set(selected.value)
+  if (next.has(task.rowKey)) next.delete(task.rowKey)
+  else next.add(task.rowKey)
+  selected.value = next
+}
+
+function toggleAll(value: boolean | string | number) {
+  selected.value = value ? new Set(tasks.value.map(task => task.rowKey)) : new Set()
+}
+
+async function changePage(page: number) {
+  await store.loadTasks(page)
+}
+
+async function changeSize(size: number) {
+  await store.setTaskPageSize(size)
+}
+
+function deleteResultText(result: DeleteRecordsResult) {
+  return result.skipped > 0
+    ? `已删除 ${result.deleted} 条，跳过 ${result.skipped} 条（录制中或转换中）`
+    : `已删除 ${result.deleted} 条`
+}
+
+async function deleteSelected() {
+  const rows = tasks.value.filter(task => selected.value.has(task.rowKey))
+  if (rows.length === 0) return
+  try {
+    await ElMessageBox.confirm(
+      `删除选中的 ${rows.length} 条记录？视频文件将保留。`,
+      '批量删除',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  const taskIds = [...new Set(rows.filter(row => !row.segmentId).map(row => row.id))]
+  const segmentIds = [...new Set(rows.filter(row => row.segmentId).map(row => row.segmentId as number))]
+  try {
+    const result = await store.deleteRecords(taskIds, segmentIds)
+    ElMessage.success(deleteResultText(result))
+  } catch (e) {
+    ElMessage.error(`删除失败: ${e}`)
+  }
+}
+
+async function clearAll() {
+  try {
+    await ElMessageBox.confirm(
+      '清空全部录制记录？视频文件将保留，录制中或转换中的记录会跳过。',
+      '清空全部',
+      { type: 'warning', confirmButtonText: '清空', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  try {
+    const result = await store.clearRecords()
+    ElMessage.success(deleteResultText(result))
+  } catch (e) {
+    ElMessage.error(`清空失败: ${e}`)
+  }
+}
 
 function danmakuCount(taskId: number) {
   return danmakuCounts.value[taskId] ?? 0
@@ -161,6 +294,38 @@ function getStatusText(status: string, conversionState?: RecordSegment['conversi
     failed: '失败',
   }
   return map[status] || status
+}
+
+function parseTime(time: string | null): number | null {
+  if (!time) return null
+  const date = new Date(time.includes('Z') || time.includes('+') ? time : time + 'Z')
+  return isNaN(date.getTime()) ? null : date.getTime()
+}
+
+function formatDuration(task: TaskRow): string {
+  const start = parseTime(task.start_time)
+  if (start == null) return ''
+  const end = parseTime(task.end_time) ?? (task.status === 'recording' ? Date.now() : null)
+  if (end == null) return ''
+  const seconds = Math.max(0, Math.floor((end - start) / 1000))
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = seconds % 60
+  if (h > 0) return `${h}小时${m}分`
+  if (m > 0) return `${m}分${s}秒`
+  return `${s}秒`
+}
+
+function formatBytes(bytes: number | null): string {
+  if (!bytes || bytes <= 0) return '—'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let index = 0
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024
+    index++
+  }
+  return `${value.toFixed(index === 0 || value >= 10 ? 0 : 1)} ${units[index]}`
 }
 
 function formatTime(time: string) {
@@ -337,6 +502,7 @@ async function deleteTask(task: TaskRow) {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
 }
 
 .card-title {
@@ -357,8 +523,9 @@ async function deleteTask(task: TaskRow) {
   font-weight: 600;
   color: var(--color-text-tertiary);
   background: var(--color-bg);
-  width: 22px;
+  min-width: 22px;
   height: 22px;
+  padding: 0 6px;
   border-radius: var(--radius-full);
   display: inline-flex;
   align-items: center;
@@ -554,21 +721,74 @@ async function deleteTask(task: TaskRow) {
   font-size: 11px;
 }
 
+.card-search {
+  width: 220px;
+  margin-left: auto;
+}
+
+.task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+.task-anchor {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+
+.task-room-title {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-quality {
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.task-missing {
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-danger-light);
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
+.task-error {
+  margin-top: 4px;
+  color: var(--color-danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .danmaku-path {
   color: #b88230;
 }
 
-.load-more {
+.card-actions {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 12px 0 4px;
+  gap: 8px;
 }
 
-.load-more-hint {
-  font-size: 11px;
-  color: var(--color-text-secondary);
+.task-select {
+  flex-shrink: 0;
+}
+
+.task-pagination {
+  display: flex;
+  justify-content: center;
+  padding: 12px 0 4px;
 }
 
 /* ── Actions ── */

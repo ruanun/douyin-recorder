@@ -56,6 +56,23 @@ test('old single-file history and start failures remain accessible', () => {
   assert.equal(rows[1].segmentId, undefined)
 })
 
+test('rows carry anchor, quality and file state for the new list metadata', () => {
+  const rows = recordingRows([session({
+    anchor_name: '主播A', room_title: '今晚直播', quality: '原画', segment_total: 2,
+    segments: [segment(1, { file_missing: true, end_time: '2026-09-25 01:00:00', file_size: 2048 })],
+  })])
+  assert.equal(rows[0].anchor_name, '主播A')
+  assert.equal(rows[0].room_title, '今晚直播')
+  assert.equal(rows[0].quality, '原画')
+  assert.equal(rows[0].segmentTotal, 2)
+  assert.equal(rows[0].file_missing, true)
+  assert.equal(rows[0].file_size, 2048)
+
+  const whole = recordingRows([session({ segment_output: null, anchor_name: 'B', error_message: '失败' })])[0]
+  assert.equal(whole.segmentTotal, 0)
+  assert.equal(whole.error_message, '失败')
+})
+
 test('closing a session disables the last segment stop button but retains completed and failed conversions', () => {
   const rows = recordingRows([session({ status: 'finalizing', segments: [
     segment(1, { conversion_state: 'failed', conversion_error: 'failure' }), segment(2, { status: 'recording' }),

@@ -290,7 +290,42 @@ fn export_danmaku_subtitles(paths: &[String], task_id: i64, room_id: i64) {
     }
 }
 
+/// Warn once per hour that a saved login cookie is being ignored, so the user
+/// can update it, without turning it into a monitoring failure.
+fn notify_cookie_fallback(state: &AppState, room_id: i64, info: &LiveInfo) {
+    if !info.cookie_fallback {
+        return;
+    }
+    recording_log::event(
+        "WARN",
+        "cookie_fallback",
+        None,
+        Some(room_id),
+        json!({"message": "Cookie 已失效，已自动忽略并继续检测/录制"}),
+    );
+    static LAST_NOTICE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    let now = Utc::now().timestamp();
+    let last = LAST_NOTICE.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < 3600 {
+        return;
+    }
+    if LAST_NOTICE
+        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    state.bus.publish(
+        "app-notice",
+        json!({
+            "level": "warning",
+            "message": "Cookie 已失效，已自动忽略并继续检测/录制；如需登录态请在设置中更新 Cookie"
+        }),
+    );
+}
+
 fn apply_live_info(state: &AppState, room_id: i64, info: &LiveInfo) -> Result<LiveRoom, String> {
+    notify_cookie_fallback(state, room_id, info);
     let db = state.db.lock().map_err(|e| e.to_string())?;
     apply_live_info_in_db(&db, room_id, info)
 }
@@ -632,6 +667,12 @@ async fn finalize_recording_exit(
             rate_limited,
         )
     };
+    if matches!(status, "failed" | "interrupted") {
+        if let Some(message) = message.as_deref() {
+            db.set_task_error(task_id, message)
+                .map_err(|e| e.to_string())?;
+        }
+    }
     let (final_task, room) = if apply_policy {
         db.finish_task_and_automation(task_id, status, final_path.as_deref(), final_size, &room)
             .map_err(|e| e.to_string())?
@@ -806,7 +847,15 @@ async fn start_record_from_info_inner(
     }
     let recordings_dir = recording_paths::prepare_directory(&app_settings, &db, &mut room)
         .map_err(StartRecordError::Fatal)?;
-    let task_id = db.add_task(room_id, trigger).map_err(fatal)?;
+    let task_id = db
+        .add_task_with_details(
+            room_id,
+            trigger,
+            &room.anchor_name,
+            &room.room_title,
+            &app_settings.quality,
+        )
+        .map_err(fatal)?;
     if let Some((_, previous)) = recovery {
         db.link_recovery(task_id, previous).map_err(fatal)?;
     }
@@ -876,10 +925,12 @@ async fn start_record_from_info_inner(
                 .open(manifest)
                 .map_err(|e| format!("无法创建分段清单: {e}"))?;
         }
+        // FFmpeg writes in-progress media to a `.part` sibling; reserve that
+        // path, not the final name (the rename needs the final name free).
         let file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&output_str)
+            .open(segments::part_path(&output_str))
             .map_err(|error| format!("无法创建录制文件: {}", error))?;
         drop(file);
         if segment_output.is_some() {
@@ -1153,6 +1204,7 @@ async fn check_auto_room(host: &Host, snapshot: LiveRoom) -> Result<(), String> 
     if state.lifecycle.is_exiting() {
         return Ok(());
     }
+    notify_cookie_fallback(&state, snapshot.id, &info);
     {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         let room = db.get_room(snapshot.id).map_err(|e| e.to_string())?;
@@ -1485,8 +1537,8 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_recording, daily_schedule_is_due, initial_schedule_marker, should_poll_auto_room,
-        LiveVerification,
+        classify_recording, daily_schedule_is_due, initial_schedule_marker, notify_cookie_fallback,
+        should_poll_auto_room, LiveInfo, LiveVerification,
     };
     use crate::database::LiveRoom;
     use crate::recorder::RecordingExit;
@@ -1603,6 +1655,29 @@ mod tests {
             Some("2026-08-21".to_string())
         );
         assert_eq!(initial_schedule_marker(future, now), None);
+    }
+
+    #[test]
+    fn cookie_fallback_is_announced_on_the_event_bus() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = crate::Runtime::with_db_path(&dir.path().join("db.sqlite")).unwrap();
+        let mut rx = runtime.host.bus.subscribe();
+        let info = LiveInfo {
+            platform: "douyin".into(),
+            room_id: "123".into(),
+            webcast_room_id: None,
+            anchor_name: String::new(),
+            room_title: String::new(),
+            cover_url: String::new(),
+            avatar_url: String::new(),
+            is_live: true,
+            stream_url: String::new(),
+            cookie_fallback: true,
+        };
+        notify_cookie_fallback(&runtime.host.state, 1, &info);
+        let (event, payload) = rx.try_recv().unwrap();
+        assert_eq!(event, "app-notice");
+        assert!(payload["message"].as_str().unwrap().contains("Cookie"));
     }
 
     #[test]

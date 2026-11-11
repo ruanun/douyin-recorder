@@ -107,6 +107,15 @@ pub async fn finish_segments(
         let db = state.db.lock().map_err(|e| e.to_string())?;
         let task = db.get_task(task_id).map_err(|e| e.to_string())?;
         let output = task.segment_output.as_ref().ok_or("找不到分段设置")?;
+        for error in output.finalize_parts().into_iter().filter_map(Result::err) {
+            crate::recording_log::event(
+                "WARN",
+                "recording_part_rename_failed",
+                Some(task_id),
+                None,
+                serde_json::json!({"error": error}),
+            );
+        }
         let entries = ManifestReader::read_all(output)?;
         db.observe_segments(task_id, output, &entries)
             .map_err(|e| e.to_string())?;

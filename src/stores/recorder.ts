@@ -14,6 +14,7 @@ import type {
   RoomAutoRecordingChanged,
   RecordingRecovery,
   DanmakuStatus,
+  DeleteRecordsResult,
 } from '../types'
 
 interface RoomRefreshResult {
@@ -28,9 +29,11 @@ export const useRecorderStore = defineStore('recorder', () => {
   const tasks = ref<RecordTask[]>([])
   const recoveries = ref<Record<number, RecordingRecovery>>({})
   /** Page size for the recording history list. */
-  const TASK_PAGE_SIZE = 200
-  const hasMoreTasks = ref(false)
-  const loadingMoreTasks = ref(false)
+  const TASK_PAGE_SIZE = 20
+  const taskPage = ref(1)
+  const taskPageSize = ref(TASK_PAGE_SIZE)
+  const totalRows = ref(0)
+  const search = ref('')
   const danmakuCounts = ref<Record<number, number>>({})
   const loading = ref(false)
   const isRefreshingAll = ref(false)
@@ -277,35 +280,45 @@ export const useRecorderStore = defineStore('recorder', () => {
     }
   }
 
-  async function loadTasks() {
+  async function loadTasks(page = taskPage.value) {
     try {
-      const result = await invoke<RecordTask[]>('get_tasks', { limit: TASK_PAGE_SIZE, offset: 0 })
+      const size = taskPageSize.value
+      const keyword = search.value.trim() || null
+      const [result, total] = await Promise.all([
+        invoke<RecordTask[]>('get_tasks', { limit: size, offset: (page - 1) * size, search: keyword }),
+        invoke<number>('count_task_rows', { search: keyword }),
+      ])
+      totalRows.value = total || 0
+      const lastPage = Math.max(1, Math.ceil(totalRows.value / size))
+      // Deleting the last row of the last page leaves us beyond the end.
+      if (page > lastPage) return loadTasks(lastPage)
+      taskPage.value = page
       tasks.value = result || []
-      hasMoreTasks.value = (result?.length ?? 0) === TASK_PAGE_SIZE
     } catch (e) {
       console.error('加载任务失败:', e)
     }
   }
 
-  /** Append the next page of older history records. */
-  async function loadMoreTasks() {
-    if (loadingMoreTasks.value || !hasMoreTasks.value) return
-    loadingMoreTasks.value = true
-    try {
-      const result = await invoke<RecordTask[]>('get_tasks', {
-        limit: TASK_PAGE_SIZE,
-        offset: tasks.value.length,
-      })
-      const page = result || []
-      const known = new Set(tasks.value.map(task => task.id))
-      // Tasks created while paging shift the offset; skip duplicates.
-      tasks.value.push(...page.filter(task => !known.has(task.id)))
-      hasMoreTasks.value = page.length === TASK_PAGE_SIZE
-    } catch (e) {
-      console.error('加载更多录制历史失败:', e)
-    } finally {
-      loadingMoreTasks.value = false
-    }
+  async function setTaskPageSize(size: number) {
+    taskPageSize.value = size
+    await loadTasks(1)
+  }
+
+  async function setSearch(value: string) {
+    search.value = value
+    await loadTasks(1)
+  }
+
+  async function deleteRecords(taskIds: number[], segmentIds: number[]) {
+    const result = await invoke<DeleteRecordsResult>('delete_records', { taskIds, segmentIds })
+    await loadTasks(taskPage.value)
+    return result
+  }
+
+  async function clearRecords() {
+    const result = await invoke<DeleteRecordsResult>('clear_records')
+    await loadTasks(1)
+    return result
   }
 
   async function startRecord(roomId: number) {
@@ -333,7 +346,7 @@ export const useRecorderStore = defineStore('recorder', () => {
   async function deleteTask(id: number) {
     try {
       await invoke('delete_task', { id })
-      tasks.value = tasks.value.filter(t => t.id !== id)
+      await loadTasks(taskPage.value)
     } catch (e) {
       console.error('删除任务失败:', e)
       throw e
@@ -381,6 +394,7 @@ export const useRecorderStore = defineStore('recorder', () => {
 
   async function deleteSegment(segmentId: number) {
     await invoke('delete_segment', { segmentId })
+    await loadTasks(taskPage.value)
   }
 
   async function saveSettings(newSettings: AppSettings) {
@@ -427,11 +441,12 @@ export const useRecorderStore = defineStore('recorder', () => {
 
   return {
     rooms, tasks, recoveries, danmakuCounts, cancelRecovery, loading, isRefreshingAll, settings, availableUpdate,
-    hasMoreTasks, loadingMoreTasks, loadMoreTasks,
+    taskPage, taskPageSize, totalRows, search,
     listenRecordingEvents, stopListeningRecordingEvents,
     loadRooms, addRoom, refreshRoom, refreshAllRooms, setRoomAutoRecord, setRoomAutoSchedule, setRoomAutoConfig,
     deleteRoom, getRoomTaskCount,
-    loadTasks, startRecord, stopRecord, deleteTask, convertToMp4, convertSegmentToMp4, deleteSegment,
+    loadTasks, setTaskPageSize, setSearch, deleteRecords, clearRecords,
+    startRecord, stopRecord, deleteTask, convertToMp4, convertSegmentToMp4, deleteSegment,
     loadSettings, saveSettings, checkForUpdate, migrateDb, exportDanmakuAss, burnDanmaku
   }
 })

@@ -125,6 +125,7 @@ impl Fixture {
             cover_url: String::new(),
             avatar_url: String::new(),
             is_live: true,
+            cookie_fallback: false,
             stream_url: if bad_input {
                 self.dir
                     .path()

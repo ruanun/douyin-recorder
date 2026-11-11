@@ -360,7 +360,10 @@ impl Recorder {
         }
         cmd.args(["-i", stream_url, "-c", "copy"]);
         if let Some(segments) = segments {
-            cmd.args(["-f", "segment", "-segment_format", "flv", "-segment_time"])
+            // The segment muxer picks no streams for unknown extensions (e.g. the
+            // `.part` suffix of the in-progress pattern), so map explicitly.
+            cmd.args(["-map", "0:v:0?", "-map", "0:a:0?", "-f", "segment"])
+                .args(["-segment_format", "flv", "-segment_time"])
                 .arg(segments.duration_secs.to_string())
                 .args([
                     "-segment_start_number",
@@ -374,7 +377,7 @@ impl Recorder {
                 .arg(&segments.manifest_path)
                 .arg(&segments.output_pattern);
         } else {
-            cmd.args(["-f", "flv", output_path]);
+            cmd.args(["-f", "flv", &crate::segments::part_path(output_path)]);
         }
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -442,6 +445,8 @@ impl Recorder {
 
         let active_records = Arc::clone(&self.active_records);
         let logger = self.logger.clone();
+        let segments_owned = segments.cloned();
+        let output_path = output_path.to_string();
         tokio::spawn(async move {
             let mut exit = tokio::select! {
                 result = child.wait() => RecordingExit::from_status(result, false),
@@ -458,6 +463,7 @@ impl Recorder {
                     .unwrap_or_else(|error| vec![format!("读取 FFmpeg 错误输出失败: {error}")]);
             }
 
+            finalize_output(segments_owned.as_ref(), &output_path, task_id);
             let result = finish_recording(logger.as_deref(), task_id, exit, on_exit).await;
 
             if let Ok(mut records) = active_records.lock() {
@@ -595,6 +601,27 @@ async fn read_stderr_tail(reader: impl AsyncRead + Unpin) -> Vec<String> {
         }
     }
     tail.into_iter().collect()
+}
+
+/// FFmpeg has exited and closed its files; drop the in-progress suffix.
+fn finalize_output(
+    segments: Option<&crate::segments::SegmentOutput>,
+    output_path: &str,
+    task_id: i64,
+) {
+    let results = match segments {
+        Some(segments) => segments.finalize_parts(),
+        None => vec![crate::segments::finalize_part_file(output_path)],
+    };
+    for error in results.into_iter().filter_map(Result::err) {
+        crate::recording_log::event(
+            "ERROR",
+            "recording_part_rename_failed",
+            Some(task_id),
+            None,
+            serde_json::json!({"error": error}),
+        );
+    }
 }
 
 async fn finish_recording<F, Fut>(
@@ -1194,7 +1221,12 @@ mod tests {
             )
             .unwrap();
         tokio::time::timeout(Duration::from_secs(12), async {
-            while std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0) < 64 * 1024 {
+            let in_progress = crate::segments::part_path(&output.to_string_lossy());
+            while std::fs::metadata(&in_progress)
+                .map(|m| m.len())
+                .unwrap_or(0)
+                < 64 * 1024
+            {
                 assert!(
                     recorder.is_active(74),
                     "recording exited before stop request"

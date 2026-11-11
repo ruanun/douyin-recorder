@@ -136,8 +136,33 @@ pub async fn get_tasks(
     state: State<'_, Arc<AppState>>,
     limit: Option<u32>,
     offset: Option<u32>,
+    search: Option<String>,
 ) -> Result<Vec<RecordTask>, String> {
-    service::get_tasks(&host(&state), limit, offset).await
+    service::get_tasks(&host(&state), limit, offset, search).await
+}
+
+#[tauri::command]
+pub fn count_task_rows(
+    state: State<'_, Arc<AppState>>,
+    search: Option<String>,
+) -> Result<i64, String> {
+    service::count_task_rows(&host(&state), search)
+}
+
+#[tauri::command]
+pub fn delete_records(
+    state: State<'_, Arc<AppState>>,
+    task_ids: Vec<i64>,
+    segment_ids: Vec<i64>,
+) -> Result<service::DeleteRecordsResult, String> {
+    service::delete_records(&host(&state), task_ids, segment_ids)
+}
+
+#[tauri::command]
+pub fn clear_records(
+    state: State<'_, Arc<AppState>>,
+) -> Result<service::DeleteRecordsResult, String> {
+    service::clear_records(&host(&state))
 }
 
 #[tauri::command]

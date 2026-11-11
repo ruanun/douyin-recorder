@@ -77,6 +77,7 @@ const showSettings = ref(false)
 const showDanmakuTool = ref(false)
 const lifecycleStatus = ref<LifecycleStatus>({ exiting: false, revision: -1, message: null })
 let unlistenLifecycle: (() => void) | undefined
+let unlistenNotice: (() => void) | undefined
 
 function applyLifecycleStatus(status: LifecycleStatus) {
   if (status.revision <= lifecycleStatus.value.revision) return
@@ -97,6 +98,11 @@ async function openLatestRelease() {
 
 onMounted(async () => {
   unlistenLifecycle = await onEvent<LifecycleStatus>('lifecycle-status-changed', (payload) => applyLifecycleStatus(payload))
+  unlistenNotice = await onEvent<{ message?: string }>('app-notice', (payload) => {
+    if (payload?.message) {
+      ElMessage.warning({ message: payload.message, duration: 8000, showClose: true })
+    }
+  })
   applyLifecycleStatus(await getLifecycleStatus())
   await store.listenRecordingEvents()
   await Promise.all([
@@ -111,6 +117,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   unlistenLifecycle?.()
+  unlistenNotice?.()
   store.stopListeningRecordingEvents()
 })
 </script>
