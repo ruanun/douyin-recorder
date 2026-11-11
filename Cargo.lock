@@ -985,7 +985,7 @@ dependencies = [
 
 [[package]]
 name = "douyin-recorder"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "chrono",
  "douyin-recorder-core",
@@ -1002,7 +1002,7 @@ dependencies = [
 
 [[package]]
 name = "douyin-recorder-core"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "chrono",
  "flate2",
@@ -1025,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "douyin-recorder-server"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "axum",
  "douyin-recorder-core",
